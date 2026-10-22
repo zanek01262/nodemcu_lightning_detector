@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+  <defs>
+    <style>
+      .pin   { font-family: ui-monospace, Consolas, 'DejaVu Sans Mono', monospace; font-size: 12.5px; fill: #e9edf7; }
+      .pinsm { font-family: ui-monospace, Consolas, 'DejaVu Sans Mono', monospace; font-size: 10.5px; fill: #a3aecb; }
+      .cap   { font-size: 12.5px; fill: #a3aecb; }
+      .hdr   { font-size: 14px; font-weight: 700; fill: #ffd84a; letter-spacing: .08em; }
+      .wire  { fill: none; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+      .strap { fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="1000" fill="#0a0d16"/>
+  <rect x="0" y="0" width="1000" height="4" fill="#ffd84a"/>
+
+  <!-- title -->
+  <g transform="translate(40, 30)">
+    <rect width="36" height="36" rx="9" fill="rgba(255,216,74,.12)" stroke="rgba(255,216,74,.3)"/>
+    <path d="M20.5 6 10 19.5h7L15.5 30 26 16.5h-7L20.5 6z" fill="#ffd84a"/>
+  </g>
+  <text x="88" y="52" font-size="24" font-weight="700" fill="#e9edf7">Lightning Detector — Wiring</text>
+  <text x="88" y="72" class="cap">Wemos D1 mini (ESP8266) + AS3935 breakout over I²C · firmware v1.0.0 · 9 connections</text>
+
+  <!-- ===================== D1 MINI ===================== -->
+  <rect x="300" y="170" width="200" height="385" rx="10" fill="#14306b" stroke="#3a64c4" stroke-width="2"/>
+  <!-- ESP-12 can + antenna -->
+  <rect x="325" y="184" width="150" height="112" rx="5" fill="#c7ccd6" stroke="#8b93a5"/>
+  <path d="M338 196 h16 v14 h-10 v10 h22 v-24 h12 v24 h12 v-24 h12 v24 h12 v-24 h10" fill="none" stroke="#6b7385" stroke-width="2.5"/>
+  <text x="400" y="252" text-anchor="middle" font-size="13" font-weight="700" fill="#2a3040">ESP8266</text>
+  <text x="400" y="270" text-anchor="middle" font-size="10.5" fill="#4a5265">ESP-12F</text>
+  <text x="400" y="318" text-anchor="middle" font-size="12.5" font-weight="700" fill="#e9edf7">WEMOS D1 mini</text>
+  <!-- reset button + LED -->
+  <rect x="318" y="520" width="18" height="12" rx="2" fill="#0d1a3a" stroke="#3a64c4"/>
+  <text x="327" y="546" text-anchor="middle" class="pinsm" font-size="8.5">RST</text>
+  <!-- USB -->
+  <rect x="368" y="542" width="64" height="24" rx="3" fill="#9aa3b5" stroke="#6b7385"/>
+  <text x="400" y="584" text-anchor="middle" class="pinsm">USB 5 V</text>
+
+  <!-- left header: RST A0 D0 D5 D6 D7 D8 3V3 -->
+  <g>
+    <rect x="285" y="326" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="335" class="pin">RST</text>
+    <rect x="285" y="352" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="361" class="pin">A0</text>
+    <rect x="285" y="378" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="387" class="pin">D0</text>
+    <rect x="285" y="404" width="15" height="9" fill="#ffd84a"/><text x="310" y="413" class="pin" font-weight="700">D5</text><text x="338" y="413" class="pinsm">GPIO14</text>
+    <rect x="285" y="430" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="439" class="pin">D6</text>
+    <rect x="285" y="456" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="465" class="pin">D7</text>
+    <rect x="285" y="482" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="310" y="491" class="pin">D8</text>
+    <rect x="285" y="508" width="15" height="9" fill="#ffd84a"/><text x="310" y="517" class="pin" font-weight="700">3V3</text>
+  </g>
+  <!-- right header: TX RX D1 D2 D3 D4 G 5V -->
+  <g>
+    <rect x="500" y="326" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="490" y="335" text-anchor="end" class="pin">TX</text>
+    <rect x="500" y="352" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="490" y="361" text-anchor="end" class="pin">RX</text>
+    <rect x="500" y="378" width="15" height="9" fill="#ffd84a"/><text x="490" y="387" text-anchor="end" class="pin" font-weight="700">D1</text><text x="462" y="387" text-anchor="end" class="pinsm">GPIO5</text>
+    <rect x="500" y="404" width="15" height="9" fill="#ffd84a"/><text x="490" y="413" text-anchor="end" class="pin" font-weight="700">D2</text><text x="462" y="413" text-anchor="end" class="pinsm">GPIO4</text>
+    <rect x="500" y="430" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="490" y="439" text-anchor="end" class="pin">D3</text>
+    <rect x="500" y="456" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="490" y="465" text-anchor="end" class="pin">D4</text><text x="462" y="465" text-anchor="end" class="pinsm">blue LED</text>
+    <rect x="500" y="482" width="15" height="9" fill="#ffd84a"/><text x="490" y="491" text-anchor="end" class="pin" font-weight="700">G</text>
+    <rect x="500" y="508" width="15" height="9" fill="#ffd84a" opacity=".5"/><text x="490" y="517" text-anchor="end" class="pin">5V</text>
+  </g>
+
+  <!-- ===================== AS3935 BREAKOUT ===================== -->
+  <rect x="700" y="290" width="215" height="360" rx="10" fill="#33215e" stroke="#8f7dff" stroke-width="2"/>
+  <text x="815" y="316" text-anchor="middle" font-size="13" font-weight="700" fill="#e9edf7">AS3935 breakout</text>
+  <text x="815" y="333" text-anchor="middle" class="pinsm" fill="#c9bfff">CJMCU-3935 shown</text>
+  <!-- chip -->
+  <rect x="790" y="430" width="44" height="44" rx="4" fill="#15102a" stroke="#6b5bd6"/>
+  <text x="812" y="456" text-anchor="middle" class="pinsm" font-size="9" fill="#c9bfff">AS3935</text>
+  <!-- antenna coil -->
+  <rect x="770" y="520" width="90" height="34" rx="17" fill="#1b1436" stroke="#c9a227" stroke-width="2"/>
+  <path d="M788 522 v30 M800 522 v30 M812 522 v30 M824 522 v30 M836 522 v30 M848 522 v30" stroke="#c9a227" stroke-width="1.4" opacity=".7"/>
+  <text x="815" y="574" text-anchor="middle" class="pinsm" fill="#c9bfff">500 kHz loop antenna</text>
+  <text x="855" y="604" text-anchor="middle" class="pinsm" fill="#8f86b8">pin order varies:</text>
+  <text x="855" y="618" text-anchor="middle" class="pinsm" fill="#8f86b8">wire by label</text>
+
+  <g>
+    <rect x="685" y="326" width="15" height="9" fill="#8f7dff"/><text x="710" y="335" class="pin" font-weight="700">IRQ</text>
+    <rect x="685" y="378" width="15" height="9" fill="#8f7dff"/><text x="710" y="387" class="pin" font-weight="700">SCL</text>
+    <rect x="685" y="404" width="15" height="9" fill="#8f7dff"/><text x="710" y="413" class="pin" font-weight="700">MOSI</text><text x="748" y="413" class="pinsm" fill="#c9bfff">= SDA</text>
+    <rect x="685" y="430" width="15" height="9" fill="#8f7dff" opacity=".45"/><text x="710" y="439" class="pin" fill="#8f86b8">MISO</text><text x="748" y="439" class="pinsm" fill="#8f86b8">n/c</text>
+    <rect x="685" y="456" width="15" height="9" fill="#8f7dff"/><text x="710" y="465" class="pin" font-weight="700">CS</text>
+    <rect x="685" y="482" width="15" height="9" fill="#8f7dff"/><text x="710" y="491" class="pin" font-weight="700">GND</text>
+    <rect x="685" y="508" width="15" height="9" fill="#8f7dff"/><text x="710" y="517" class="pin" font-weight="700">VCC</text>
+    <rect x="685" y="534" width="15" height="9" fill="#8f7dff"/><text x="710" y="543" class="pin" font-weight="700">SI</text>
+    <rect x="685" y="560" width="15" height="9" fill="#8f7dff"/><text x="710" y="569" class="pin" font-weight="700">A0</text>
+    <rect x="685" y="586" width="15" height="9" fill="#8f7dff"/><text x="710" y="595" class="pin" font-weight="700">A1</text>
+    <rect x="685" y="612" width="15" height="9" fill="#8f7dff" opacity=".7"/><text x="710" y="621" class="pin" font-weight="700">EN_V</text>
+  </g>
+
+  <!-- ===================== WIRES ===================== -->
+  <!-- SCL: D1 -> SCL -->
+  <path d="M515 382 H685" class="wire" stroke="#5aa9ff"/>
+  <!-- SDA: D2 -> MOSI -->
+  <path d="M515 408 H685" class="wire" stroke="#4fd18b"/>
+  <!-- GND: G -> GND -->
+  <path d="M515 486 H685" class="wire" stroke="#9aa3b5"/>
+  <!-- CS strapped to GND -->
+  <path d="M685 460 H672 V486" class="strap" stroke="#9aa3b5"/>
+  <circle cx="672" cy="486" r="4.5" fill="#9aa3b5"/>
+  <!-- IRQ: D5 (left header) -> over the top -> IRQ -->
+  <path d="M285 408 H245 V140 H630 V330 H685" class="wire" stroke="#ffd84a"/>
+  <!-- 3V3: left header -> under the board -> VCC -->
+  <path d="M285 512 H255 V650 H650 V512 H685" class="wire" stroke="#ff5d62"/>
+  <!-- SI, A0, A1, EN_V strapped to 3V3 -->
+  <path d="M672 512 V616" class="strap" stroke="#ff5d62"/>
+  <path d="M672 538 H685 M672 564 H685 M672 590 H685 M672 616 H685" class="strap" stroke="#ff5d62"/>
+  <circle cx="672" cy="512" r="4.5" fill="#ff5d62"/>
+
+  <!-- wire labels -->
+  <text x="560" y="376" class="pinsm" fill="#9cc9ff">SCL</text>
+  <text x="560" y="402" class="pinsm" fill="#9be7bd">SDA</text>
+  <text x="560" y="480" class="pinsm" fill="#c6ccd8">GND</text>
+  <text x="440" y="133" class="pinsm" fill="#ffe27a">IRQ  ·  D5 → IRQ</text>
+  <text x="440" y="668" class="pinsm" fill="#ff9a9d">3V3 → VCC</text>
+
+  <!-- spacing marker -->
+  <path d="M515 700 H685" stroke="#6c7899" stroke-width="1.2" stroke-dasharray="4 4"/>
+  <path d="M515 694 v12 M685 694 v12" stroke="#6c7899" stroke-width="1.2"/>
+  <text x="600" y="722" text-anchor="middle" class="cap" fill="#e9edf7">keep 15–20 cm apart</text>
+  <text x="600" y="738" text-anchor="middle" class="pinsm">the ESP8266 and its USB supply are RF noise to the sensor</text>
+
+  <!-- ===================== NOTES ===================== -->
+  <g transform="translate(40, 770)">
+    <rect width="560" height="196" rx="10" fill="#111726" stroke="#222d4a"/>
+    <text x="18" y="28" class="hdr">I²C WIRING NOTES</text>
+    <text x="18" y="54" class="cap"><tspan fill="#e9edf7" font-weight="600">SI, A0, A1 → 3V3</tspan> selects I²C at address 0x03 (the firmware also tries 0x01/0x02).</text>
+    <text x="18" y="76" class="cap"><tspan fill="#e9edf7" font-weight="600">EN_V → 3V3</tspan> if your board breaks it out (turns on the chip's regulator).</text>
+    <text x="18" y="98" class="cap"><tspan fill="#e9edf7" font-weight="600">CS → GND</tspan>, <tspan fill="#e9edf7" font-weight="600">MISO</tspan> not connected. The I²C data line is the <tspan fill="#e9edf7" font-weight="600">MOSI</tspan> pad.</text>
+    <text x="18" y="120" class="cap">Sensor not found? A few boards swap the MOSI/MISO labels — try MISO on D2.</text>
+    <text x="18" y="142" class="cap">Flaky? Add 4.7 kΩ from SCL to 3V3 (the chip pulls up SDA internally, not SCL).</text>
+    <text x="18" y="164" class="cap"><tspan fill="#ff9a9d" font-weight="600">Never put IRQ on D3, D4 or D8</tspan> — boot pins; the AS3935 holds IRQ low</text>
+    <text x="18" y="182" class="cap">and the D1 mini would not start.</text>
+  </g>
+
+  <g transform="translate(620, 770)">
+    <rect width="340" height="196" rx="10" fill="#111726" stroke="#222d4a"/>
+    <text x="18" y="28" class="hdr">SPI INSTEAD</text>
+    <text x="18" y="48" class="pinsm">SparkFun v2 boards are SPI only. Uncomment</text>
+    <text x="18" y="62" class="pinsm">AS3935_USE_SPI in config.h, then wire:</text>
+    <g class="pin" font-size="12">
+      <text x="18" y="88">SCK  → D5</text>  <text x="170" y="88">MISO → D6</text>
+      <text x="18" y="108">MOSI → D7</text>  <text x="170" y="108">CS   → D2</text>
+      <text x="18" y="128">IRQ  → D1</text>  <text x="170" y="128">VCC  → 3V3</text>
+      <text x="18" y="148">GND  → G</text>   <text x="170" y="148">SI   → GND</text>
+    </g>
+    <text x="18" y="176" class="pinsm">SI only on boards that break it out.</text>
+  </g>
+
+  <!-- legend -->
+  <g transform="translate(40, 108)">
+    <line x1="0" y1="0" x2="26" y2="0" class="wire" stroke="#ff5d62"/><text x="32" y="4" class="cap">3V3</text>
+    <line x1="76" y1="0" x2="102" y2="0" class="wire" stroke="#9aa3b5"/><text x="108" y="4" class="cap">GND</text>
+    <line x1="154" y1="0" x2="180" y2="0" class="wire" stroke="#5aa9ff"/><text x="186" y="4" class="cap">SCL</text>
+  </g>
+  <g transform="translate(40, 130)">
+    <line x1="0" y1="0" x2="26" y2="0" class="wire" stroke="#4fd18b"/><text x="32" y="4" class="cap">SDA</text>
+    <line x1="76" y1="0" x2="102" y2="0" class="wire" stroke="#ffd84a"/><text x="108" y="4" class="cap">IRQ</text>
+  </g>
+  <text x="40" y="175" class="pinsm">Pin positions follow the</text>
+  <text x="40" y="189" class="pinsm">LOLIN pinout; always wire by</text>
+  <text x="40" y="203" class="pinsm">the labels printed on your board.</text>
+  <text x="40" y="232" class="pinsm" fill="#9cc9ff">Blue LED (D4): flashes on each</text>
+  <text x="40" y="246" class="pinsm" fill="#9cc9ff">strike, blinks in setup mode.</text>
+</svg>
