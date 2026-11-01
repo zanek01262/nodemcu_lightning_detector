@@ -103,13 +103,76 @@ struct MinuteRing {
     return s;
   }
 };
-static MinuteRing s_distRing  = { {0}, 0 };
-static MinuteRing s_noiseRing = { {0}, 0 };
+static MinuteRing s_distRing   = { {0}, 0 };
+static MinuteRing s_noiseRing  = { {0}, 0 };
+static MinuteRing s_distTxRing = { {0}, 0 };   // disturbers right after a web request
 
 // Runtime noise floor (auto noise floor moves it; settings.noiseFloor is
 // the floor it never goes below).
 static uint8_t  s_nfNow = DEF_NOISE_FLOOR;
 static uint32_t s_nfChangedMs = 0;
+
+// ---- Wi-Fi radio -----------------------------------------------------
+// The radio is the loudest thing near the sensor: every transmit burst and
+// every wake-up is a step in supply current. Keep it awake (steady current)
+// and transmit no louder than the link needs.
+static float    s_txDbm      = WIFI_MAX_DBM;
+static bool     s_txLocked   = false;   // link dropped while trimmed: full power
+static bool     s_radioDirty = true;    // settings changed: re-evaluate now
+static float    s_rssiAvg    = 0;
+static uint32_t s_lastReqMs  = 0;       // last web request (its reply is a transmit burst)
+static bool     s_reqSeen    = false;
+
+static void radioSetPower(float dbm) {
+  if (dbm > WIFI_MAX_DBM) dbm = WIFI_MAX_DBM;
+  if (dbm < WIFI_AUTO_MIN_DBM) dbm = WIFI_AUTO_MIN_DBM;
+  if (fabsf(dbm - s_txDbm) < 0.25f) return;
+  WiFi.setOutputPower(dbm);
+  Serial.printf("[WiFi] transmit power %.1f dBm (RSSI %.0f)\n", dbm, s_rssiAvg);
+  s_txDbm = dbm;
+}
+
+static void radioApplySleep() {
+  WiFi.setSleepMode(settings.wifiSleep ? WIFI_MODEM_SLEEP : WIFI_NONE_SLEEP);
+}
+
+static void radioUpdate() {
+  static uint32_t lastSample = 0, lastEval = 0, downSince = 0;
+  uint32_t now = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!downSince) downSince = now | 1;
+    if (now - downSince >= WIFI_DOWN_FULL_MS && s_txDbm < WIFI_MAX_DBM) {
+      Serial.println(F("[WiFi] link down while trimmed -> full power until settings change"));
+      s_txLocked = true;
+      radioSetPower(WIFI_MAX_DBM);
+    }
+    return;
+  }
+  downSince = 0;
+
+  // Smoothed RSSI: single readings jump several dB beacon to beacon.
+  if (now - lastSample >= 5000UL || s_rssiAvg == 0) {
+    lastSample = now;
+    int r = WiFi.RSSI();
+    if (r < 0 && r > -100) s_rssiAvg = s_rssiAvg == 0 ? r : s_rssiAvg * 0.8f + r * 0.2f;
+  }
+  if (!s_radioDirty && now - lastEval < WIFI_AUTO_EVERY_MS) return;
+  bool forced = s_radioDirty;
+  s_radioDirty = false;
+  lastEval = now;
+
+  float target;
+  if (s_txLocked)                  target = WIFI_MAX_DBM;
+  else if (settings.wifiPower >= 0) target = settings.wifiPower >= 20 ? WIFI_MAX_DBM : settings.wifiPower;
+  else {
+    // Auto: drop 1 dB per dB of signal above the reference, within limits.
+    float cut = s_rssiAvg + (float)(-WIFI_AUTO_REF_RSSI);
+    if (s_rssiAvg == 0 || cut < 0) cut = 0;
+    target = WIFI_MAX_DBM - cut;
+  }
+  // Raise at once; lower only for a step of 2 dB or more (no hunting).
+  if (forced || target > s_txDbm || s_txDbm - target >= 2.0f) radioSetPower(target);
+}
 
 // ---- LED -------------------------------------------------------------
 static uint32_t s_ledOffAt = 0;
@@ -199,6 +262,9 @@ static void handleEvent(const AsEvent& ev) {
     case AS_EV_DISTURBER:
       s_disturbers++;
       s_distRing.add();
+      // Right after a web request the radio was sending the reply. If most
+      // disturbers land here, the detector's own Wi-Fi is the noise source.
+      if (s_reqSeen && now - s_lastReqMs < WIFI_TX_WINDOW_MS) s_distTxRing.add();
       break;
     case AS_EV_NOISE:
       // INT_NH repeats for as long as the noise lasts; count it once a second.
@@ -254,7 +320,7 @@ static void sensorHousekeeping() {
   // Health check: a brown-out resets the chip to defaults (and a loose
   // wire reads garbage). If our settings are gone, start it over.
   static uint32_t lastCheck = 0;
-  if (now - lastCheck >= 30000UL) {
+  if (now - lastCheck >= HEALTH_CHECK_MS) {
     lastCheck = now;
     uint8_t m = settings.minStrikes;
     uint8_t mCode = m >= 16 ? 3 : m >= 9 ? 2 : m >= 5 ? 1 : 0;
@@ -346,17 +412,19 @@ static void handleState() {
   if (reload) since = s_seq;
 
   const AsTune& tune = asTuneState();
-  // Fixed buffer, no String churn: this is polled every 2 s for months.
-  // Header ~600 bytes + 32 rows x 26 = ~1450 worst case.
-  static char buf[1700];
+  // Fixed buffer, no String churn: this is polled every few seconds for
+  // months. Header ~720 bytes + 32 rows x 26 = ~1550 worst case.
+  static char buf[1800];
   int off = snprintf(buf, sizeof(buf),
     "{\"fw\":\"" FW_VERSION "\",\"up\":%lu,\"time\":%lu,\"timeValid\":%d,\"fs\":%d,"
     "\"sensor\":%d,\"bus\":\"%s\",\"defaults\":%d,\"calib\":%d,"
     "\"tuning\":%d,\"tuneStep\":%u,\"cap\":%d,\"nf\":%u,\"nfMin\":%u,\"autoNoise\":%u,"
     "\"storm\":%u,\"stormAge\":%ld,"
-    "\"disturbers\":%lu,\"disturbersHr\":%lu,\"noiseSecs\":%lu,\"noiseHr\":%lu,\"noiseAge\":%ld,"
+    "\"disturbers\":%lu,\"disturbersHr\":%lu,\"distTxHr\":%lu,"
+    "\"noiseSecs\":%lu,\"noiseHr\":%lu,\"noiseAge\":%ld,"
     "\"pending\":%u,\"dropped\":%lu,\"gen\":%lu,\"reload\":%d,"
-    "\"rssi\":%d,\"heap\":%u,\"new\":[",
+    "\"rssi\":%d,\"txDbm\":%.1f,\"txLocked\":%d,\"wifiPower\":%d,\"wifiSleep\":%u,"
+    "\"heap\":%u,\"new\":[",
     (unsigned long)(millis() / 1000UL), (unsigned long)time(nullptr),
     timeIsValid() ? 1 : 0, storageReady() ? 1 : 0,
     asPresent() ? 1 : 0, asBusName(), asDefaultsOk() ? 1 : 0, asCalibOk() ? 1 : 0,
@@ -364,11 +432,13 @@ static void handleState() {
     settings.autoNoise,
     s_stormDist, (long)ageSecs(s_haveStorm, s_stormMs),
     (unsigned long)s_disturbers, (unsigned long)s_distRing.sum(),
+    (unsigned long)s_distTxRing.sum(),
     (unsigned long)s_noiseSecs, (unsigned long)s_noiseRing.sum(),
     (long)ageSecs(s_noiseSeen, s_lastNoiseMs),
     s_pendingN, (unsigned long)s_pendingDropped, (unsigned long)s_gen,
     reload ? 1 : 0,
-    WiFi.RSSI(), ESP.getFreeHeap());
+    WiFi.RSSI(), (double)s_txDbm, s_txLocked ? 1 : 0, settings.wifiPower, settings.wifiSleep,
+    ESP.getFreeHeap());
   // "seq" is the next strike the page should ask for. It follows the rows
   // actually sent, so if the buffer ever filled up the rest come next poll.
   uint32_t q = since;
@@ -437,6 +507,8 @@ static void handleConfigGet() {
   j += "\"maskDist\":"    + String(settings.maskDist) + ",";
   j += "\"autoNoise\":"   + String(settings.autoNoise) + ",";
   j += "\"tuneCap\":"     + String(settings.tuneCap) + ",";
+  j += "\"wifiPower\":"   + String(settings.wifiPower) + ",";
+  j += "\"wifiSleep\":"   + String(settings.wifiSleep) + ",";
   j += "\"hasLoc\":"      + String(settings.hasLoc) + ",";
   j += "\"lat\":"         + String(settings.lat, 6) + ",";
   j += "\"lon\":"         + String(settings.lon, 6) + ",";
@@ -480,7 +552,16 @@ static void handleConfigSet() {
   if (argU8("autoNoise", v))  { settings.autoNoise  = v; sensorChanged = true; }
   int8_t oldCap = settings.tuneCap;
   if (server.hasArg("tuneCap")) settings.tuneCap = (int8_t)server.arg("tuneCap").toInt();
+  bool radioChanged = false;
+  if (server.hasArg("wifiPower")) { settings.wifiPower = (int8_t)server.arg("wifiPower").toInt(); radioChanged = true; }
+  if (argU8("wifiSleep", v))      { settings.wifiSleep = v; radioChanged = true; }
   clampSettings();
+
+  if (radioChanged) {
+    s_txLocked   = false;              // a new choice gets a fresh try
+    s_radioDirty = true;               // radioUpdate() applies the power
+    radioApplySleep();
+  }
 
   if (asPresent() && !asTuneState().busy) {
     if (sensorChanged) {
@@ -644,6 +725,10 @@ static bool startSTAMode() {
   apMode = false;
   WiFi.mode(WIFI_STA);
   WiFi.hostname(MDNS_HOSTNAME);
+  // Join at full power; radioUpdate() trims it once the link is up.
+  WiFi.setOutputPower(WIFI_MAX_DBM);
+  s_txDbm = WIFI_MAX_DBM;
+  radioApplySleep();
 #ifdef USE_STATIC_IP
   WiFi.config(STATIC_IP, STATIC_GATEWAY, STATIC_SUBNET, STATIC_DNS);
 #endif
@@ -675,6 +760,15 @@ static bool startSTAMode() {
   server.on("/api/regs",     handleRegs);
   server.on("/api/reset",    HTTP_POST, handleReset);
   server.onNotFound(handleNotFound);
+  // Timestamp every request: its reply is a transmit burst, which is what
+  // the "near Wi-Fi traffic" disturber count is measured against.
+  // (No HTTP keep-alive: this server handles one client at a time, and an
+  // idle kept-alive connection would stall other requests for seconds.)
+  server.addHook([](const String&, const String&, WiFiClient*, ESP8266WebServer::ContentTypeFunction) {
+    s_lastReqMs = millis();
+    s_reqSeen   = true;
+    return ESP8266WebServer::CLIENT_REQUEST_CAN_CONTINUE;
+  });
 #ifdef OTA_PASSWORD
   httpUpdater.setup(&server, "/update", "admin", OTA_PASSWORD);
 #else
@@ -737,6 +831,7 @@ void loop() {
   } else {
     MDNS.update();
     ArduinoOTA.handle();
+    radioUpdate();
   }
   server.handleClient();
 

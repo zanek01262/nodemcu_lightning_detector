@@ -1,4 +1,4 @@
-# Lightning Detector — Handoff (v1.0.0)
+# Lightning Detector — Handoff (v1.1.0)
 
 **Purpose of this doc:** everything a new person (or a new AI session) needs to
 pick this project up cold. The root `README.md` is the short build guide.
@@ -94,7 +94,7 @@ wiring_diagram.svg     wiring
 ```
 
 **Design rules that matter:**
-- `/api/state` is polled every 2 s for months: `snprintf` into a static buffer,
+- `/api/state` is polled every 5 s for months: `snprintf` into a static buffer,
   never `String` concat.
 - Nothing blocks `loop()` for long. The 2 ms wait the datasheet asks for
   before reading the interrupt register is done by `asPoll()` across loop
@@ -123,7 +123,7 @@ loop: asPoll() sees flag or IRQ high -> waits >= 2 ms -> reads REG0x03
 - **Auto noise floor** (default on): each INT_NH raises NF_LEV one step (at
   most every 5 s). After 30 quiet minutes it steps back down, never below the
   saved value. Runtime only, no flash writes.
-- **Health check** every 30 s: REG0x01/0x02 are compared with what was
+- **Health check** every 5 min: REG0x01/0x02 are compared with what was
   written. A brown-out resets the chip to defaults; on mismatch the driver
   re-initialises. A missing sensor is retried every 10 s, so a wiring fix is
   picked up without a reboot.
@@ -140,6 +140,27 @@ loop: asPoll() sees flag or IRQ high -> waits >= 2 ms -> reads REG0x03
 
 ---
 
+## 6a. Self-interference (Wi-Fi) — v1.1.0
+
+The ESP8266 is the noisiest thing near the sensor. What the firmware does
+about it:
+
+| Measure | Why |
+|---|---|
+| Radio **always awake** (`WIFI_NONE_SLEEP`, setting "Radio") | Modem sleep powers the radio down and up at every beacon (~10×/s); each step in supply current is an impulse the sensor can hear. Always awake costs ~50 mA of steady draw. |
+| **Auto transmit power** (setting "Wi-Fi power") | Cuts 1 dB per dB the smoothed RSSI beats −65 dBm, down to 8 dBm, re-evaluated each minute (raise at once, lower in ≥2 dB steps). Joins at full power. If the link drops for 10 s while trimmed it goes back to full power and stays there until the setting is changed. |
+| Dashboard polls every **5 s** (30 s when the tab is hidden) | Each reply is a transmit burst. Nobody watching = almost no traffic. |
+| I2C at **80 kHz**, not 100 kHz | A 100 kHz square clock's 5th harmonic is exactly 500 kHz. |
+| Health check every **5 min** | Each check is bus traffic next to the antenna. |
+| "**near Wi-Fi**" counter on the Disturbers tile | Disturbers within 500 ms of a web request (stamped by a request hook). With the page polling every 5 s, ~10% land there by chance; if most do, Wi-Fi is the source. |
+
+HTTP keep-alive was considered and **not** used: the server handles one
+client at a time, and an idle kept-alive connection blocks other requests for
+up to 5 s. The handshake packets go out in the same few milliseconds as the
+reply anyway.
+
+---
+
 ## 7. HTTP API
 
 **STA mode:**
@@ -149,7 +170,7 @@ loop: asPoll() sees flag or IRQ high -> waits >= 2 ms -> reads REG0x03
 | `GET /` | dashboard |
 | `GET /api/state?since=<seq>` | status + strikes committed after `seq` (inline, from a 32-entry RAM ring). `reload:1` = page must refetch the log |
 | `GET /api/strikes[?since=<epoch>]` | whole log, `[[epoch, distance, energy, flags], …]`, streamed |
-| `GET/POST /api/config` | sensor settings, location (`lat`,`lon` / `clearLoc`), `tuneCap` |
+| `GET/POST /api/config` | sensor settings, location (`lat`,`lon` / `clearLoc`), `tuneCap`, `wifiPower` (−1 auto, 8/11/14/17/20), `wifiSleep` (0/1) |
 | `GET/POST /api/tune` | antenna sweep status / start |
 | `POST /api/simulate` | logs a test strike (flag 1) at a random distance |
 | `POST /api/clearlog` | deletes the log |
@@ -167,7 +188,7 @@ the setup page).
 
 | File | Contents | Rotation |
 |---|---|---|
-| `/config.json` | WiFi, sensor settings, tuning cap, location | written to `/config.tmp` then renamed (power-cut safe) |
+| `/config.json` | WiFi, sensor settings, tuning cap, radio settings, location | written to `/config.tmp` then renamed (power-cut safe) |
 | `/strikes.csv` | `epoch,distance,energy,flags` | 64 KB → `/strikes.old.csv` (~5400 strikes total) |
 
 Distance: 1 = overhead, 63 = out of range. Flags: bit 0 = test strike.
@@ -207,6 +228,8 @@ Distance: 1 = overhead, 63 = out of range. Flags: bit 0 = test strike.
    used in `.ino` function signatures go in a header or become methods.
 9. **CARTO basemaps now need an API key.** The dark map uses Esri's World Dark
    Gray canvas (no key, native zoom ≤ 16).
+10. **100 kHz I2C puts its 5th harmonic on 500 kHz**, the antenna frequency.
+    Pick a bus clock whose odd harmonics miss 483–517 kHz (80 kHz does).
 
 ---
 

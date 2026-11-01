@@ -44,7 +44,10 @@
 // ---------- Firmware version (semver) ----------
 // MAJOR: breaking hardware/storage changes; MINOR: features; PATCH: fixes
 //   1.0.0 first release: AS3935 (I2C/SPI), setup AP, map + log dashboard
-#define FW_VERSION "1.0.0"
+//   1.1.0 less self-interference: radio always awake, auto TX power, 5 s
+//         dashboard polling, 80 kHz I2C, 5 min health check, "near Wi-Fi"
+//         disturber counter
+#define FW_VERSION "1.1.0"
 
 // ---------- SoftAP provisioning ----------
 #define AP_SSID  "LightningDetector-Setup"
@@ -82,10 +85,33 @@ static const IPAddress AP_IP(192, 168, 4, 1);
   #define PIN_AS_SCL       5        // D1
   #define PIN_AS_IRQ       14       // D5
   #define AS3935_I2C_ADDR  0x03     // A0 + A1 tied to 3V3
-  #define AS3935_I2C_HZ    100000
+  // Not 100 kHz: a square-wave clock's 5th harmonic would sit at exactly
+  // 500 kHz, the frequency the antenna is tuned to. At 80 kHz the 5th and
+  // 7th harmonics (400/560 kHz) fall outside the ~33 kHz receive band, and
+  // the slower edges suit long sensor wires better too.
+  #define AS3935_I2C_HZ    80000
   // If nothing answers at AS3935_I2C_ADDR, 0x01 and 0x02 are tried too
   // (boards whose A0/A1 are left floating or tied differently).
 #endif
+
+// ---------- Wi-Fi radio (self-interference) ----------
+// The AS3935 hears the ESP8266's supply current, which jumps whenever the
+// radio transmits or wakes. Defaults: radio always awake (no on/off steps
+// at every beacon, ~10x a second) and transmit power trimmed to what the
+// link needs.
+#define DEF_WIFI_POWER     -1     // -1 = auto, else dBm: 8, 11, 14, 17 or 20 (= 20.5 max)
+#define DEF_WIFI_SLEEP     0      // 0 = always awake, 1 = modem sleep (SDK default)
+#define WIFI_MAX_DBM       20.5f
+#define WIFI_AUTO_MIN_DBM  8.0f
+// Auto power: cut 1 dB for every dB the received signal beats -65 dBm,
+// up to the minimum above. Re-evaluated every minute from a smoothed RSSI.
+#define WIFI_AUTO_REF_RSSI -65
+#define WIFI_AUTO_EVERY_MS 60000UL
+// If the link drops while power is trimmed, go back to full power and
+// stay there until the setting is changed.
+#define WIFI_DOWN_FULL_MS  10000UL
+// A disturber this soon after a web request counts as "near Wi-Fi traffic".
+#define WIFI_TX_WINDOW_MS  500
 
 // ---------- Status LED ----------
 #define PIN_LED          2          // D4, the D1 mini's blue LED
@@ -124,6 +150,10 @@ static const IPAddress AP_IP(192, 168, 4, 1);
 #define DEF_MASK_DIST    0     // 1 = sensor stops reporting disturbers
 #define DEF_AUTO_NOISE   1     // 1 = raise the noise floor on "noise too high"
 #define DEF_TUNE_CAP     -1    // -1 = untuned: auto-tune on first boot
+
+// Register health check (catches a brown-out reset of the chip). Each
+// check is I2C traffic next to the antenna, so it runs rarely.
+#define HEALTH_CHECK_MS    (5UL * 60UL * 1000UL)
 
 // Auto noise floor: each "noise too high" interrupt raises the floor one
 // step (at most every AUTO_NF_RAISE_MS); after AUTO_NF_QUIET_MS without

@@ -37,8 +37,12 @@ network with a setup page where you pick your home Wi-Fi.
 | MISO | not connected |
 
 Keep the sensor **15–20 cm away** from the D1 mini and its USB supply. It
-listens at 500 kHz and hears electrical noise. SPI wiring and more detail are
-in [`config.h`](LightningDetector/config.h) and
+listens at 500 kHz and hears electrical noise. The firmware keeps its own
+Wi-Fi as quiet as it can (radio always awake, transmit power trimmed to what
+your signal needs), and the Disturbers tile shows how many disturbers came
+right after Wi-Fi traffic, so you can tell whether Wi-Fi is the problem.
+
+SPI wiring and more detail are in [`config.h`](LightningDetector/config.h) and
 [`HANDOFF.md`](LightningDetector/HANDOFF.md).
 
 ## Flash

@@ -18,6 +18,9 @@ struct Settings {
   uint8_t maskDist;     // 1 = chip does not report disturbers
   uint8_t autoNoise;    // 1 = raise the noise floor while noise is too high
   int8_t  tuneCap;      // 0..15, -1 = never tuned
+  // Wi-Fi radio
+  int8_t  wifiPower;    // -1 = auto, else dBm (8, 11, 14, 17, 20)
+  uint8_t wifiSleep;    // 0 = always awake, 1 = modem sleep
   // Map
   uint8_t hasLoc;       // 1 = sensor location set
   float   lat, lon;     // degrees (float: ~0.5 m resolution, plenty here)

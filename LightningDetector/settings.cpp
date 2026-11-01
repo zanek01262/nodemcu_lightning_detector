@@ -36,6 +36,8 @@ static void applyDefaults() {
   settings.maskDist   = DEF_MASK_DIST;
   settings.autoNoise  = DEF_AUTO_NOISE;
   settings.tuneCap    = DEF_TUNE_CAP;
+  settings.wifiPower  = DEF_WIFI_POWER;
+  settings.wifiSleep  = DEF_WIFI_SLEEP;
   settings.hasLoc     = 0;
   settings.lat        = 0;
   settings.lon        = 0;
@@ -51,6 +53,9 @@ void clampSettings() {
   settings.maskDist   = settings.maskDist  ? 1 : 0;
   settings.autoNoise  = settings.autoNoise ? 1 : 0;
   if (settings.tuneCap < -1 || settings.tuneCap > 15) settings.tuneCap = -1;
+  int8_t w = settings.wifiPower;     // snap to the offered steps
+  settings.wifiPower = w < 0 ? -1 : w >= 19 ? 20 : w >= 16 ? 17 : w >= 13 ? 14 : w >= 10 ? 11 : 8;
+  settings.wifiSleep = settings.wifiSleep ? 1 : 0;
   if (!(settings.lat >= -90 && settings.lat <= 90 &&
         settings.lon >= -180 && settings.lon <= 180)) {   // also catches NaN
     settings.hasLoc = 0; settings.lat = 0; settings.lon = 0;
@@ -125,6 +130,8 @@ void loadSettings() {
   if (findValue(src, "maskDist", v))   settings.maskDist   = (uint8_t)v.toInt();
   if (findValue(src, "autoNoise", v))  settings.autoNoise  = (uint8_t)v.toInt();
   if (findValue(src, "tuneCap", v))    settings.tuneCap    = (int8_t)v.toInt();
+  if (findValue(src, "wifiPower", v))  settings.wifiPower  = (int8_t)v.toInt();
+  if (findValue(src, "wifiSleep", v))  settings.wifiSleep  = (uint8_t)v.toInt();
   if (findValue(src, "hasLoc", v))     settings.hasLoc     = (uint8_t)v.toInt();
   if (findValue(src, "lat", v))        settings.lat        = v.toFloat();
   if (findValue(src, "lon", v))        settings.lon        = v.toFloat();
@@ -148,6 +155,8 @@ bool saveSettings() {
   f.print(F("  \"maskDist\":"));    f.print(settings.maskDist);             f.print(F(",\n"));
   f.print(F("  \"autoNoise\":"));   f.print(settings.autoNoise);            f.print(F(",\n"));
   f.print(F("  \"tuneCap\":"));     f.print(settings.tuneCap);              f.print(F(",\n"));
+  f.print(F("  \"wifiPower\":"));   f.print(settings.wifiPower);            f.print(F(",\n"));
+  f.print(F("  \"wifiSleep\":"));   f.print(settings.wifiSleep);            f.print(F(",\n"));
   f.print(F("  \"hasLoc\":"));      f.print(settings.hasLoc);               f.print(F(",\n"));
   f.print(F("  \"lat\":"));         f.print(settings.lat, 6);               f.print(F(",\n"));
   f.print(F("  \"lon\":"));         f.print(settings.lon, 6);               f.print(F("\n"));

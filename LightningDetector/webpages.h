@@ -270,7 +270,7 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
   @media(min-width:1040px){.main{grid-template-columns:minmax(0,1.65fr) minmax(0,1fr)}}
   .side{display:flex;flex-direction:column;gap:16px;min-width:0}
   .lower{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px}
-  @media(min-width:900px){.lower{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(min-width:760px){.lower{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;min-width:0}
   .ph{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
   h2{font-family:var(--display);font-weight:600;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--bolt);margin:0}
@@ -362,11 +362,12 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
   .empty{padding:22px 12px;text-align:center;color:var(--faint);font-size:13.5px}
 
   /* ---- settings ---- */
-  .ctl{display:grid;grid-template-columns:118px minmax(0,1fr) 64px;align-items:center;gap:10px;margin:11px 0}
+  .ctl{display:grid;grid-template-columns:112px minmax(0,1fr) 40px;align-items:center;gap:10px;margin:11px 0}
+  .ctl select{width:100%}
   .ctl > label{font-size:13px;color:var(--dim);font-weight:500}
   .ctl output{font-family:var(--mono);color:var(--bolt);font-size:13px;text-align:right}
   input[type=range]{width:100%;accent-color:var(--bolt)}
-  .sub{font-size:12px;color:var(--faint);margin:-6px 0 8px 128px}
+  .sub{font-size:12px;color:var(--faint);margin:-6px 0 8px 122px}
   .divider{border-top:1px solid var(--line);margin:14px 0}
   .kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;font-size:13px;margin:0}
   .kv dt{color:var(--faint)} .kv dd{margin:0;color:var(--ink);font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere}
@@ -422,7 +423,7 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
     <div class="tile"><div class="k">Last strike</div><div class="v" id="tLast">&mdash;</div><div class="s" id="tLastS">&nbsp;</div></div>
     <div class="tile" data-help="Closest|The nearest distance reported in the window. 'Overhead' means the storm is right above the sensor."><div class="k">Closest</div><div class="v" id="tClose">&mdash;</div><div class="s" id="tCloseS">&nbsp;</div></div>
     <div class="tile" data-help="Storm front|The chip's own running estimate of the distance to the leading edge of the storm. It can change without a new strike as old strikes age out."><div class="k">Storm front</div><div class="v" id="tStorm">&mdash;</div><div class="s" id="tStormS">sensor estimate</div></div>
-    <div class="tile" data-help="Disturbers|Man-made pulses (motors, switches, chargers) the chip rejected as not-lightning. Lots of these mean the sensor is near something electrically noisy."><div class="k">Disturbers</div><div class="v" id="tDist">0</div><div class="s" id="tDistS">last hour</div></div>
+    <div class="tile" data-help="Disturbers|Man-made pulses (motors, switches, chargers) the chip rejected as not-lightning. Each one deafens the chip for 1.5 s. 'Near Wi-Fi' counts those within half a second of the detector answering a web request: by chance about 1 in 10 land there while this page is open, so if most do, the detector's own Wi-Fi is the noise source."><div class="k">Disturbers</div><div class="v" id="tDist">0</div><div class="s" id="tDistS">last hour</div></div>
     <div class="tile" data-help="Noise floor|Background radio noise level the chip tolerates (0-7). With auto noise floor on, it rises while noise is too high and falls back after 30 quiet minutes."><div class="k">Noise floor</div><div class="v" id="tNoise">&mdash;</div><div class="s" id="tNoiseS">&nbsp;</div></div>
   </div>
 
@@ -539,12 +540,34 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
         <dt>Firmware</dt><dd id="dFw">&mdash;</dd>
         <dt>Address</dt><dd id="dIp">&mdash;</dd>
         <dt>Wi-Fi signal</dt><dd id="dRssi">&mdash;</dd>
+        <dt>Transmit</dt><dd id="dTx">&mdash;</dd>
         <dt>Clock</dt><dd id="dTime">&mdash;</dd>
         <dt>Uptime</dt><dd id="dUp">&mdash;</dd>
         <dt>Log</dt><dd id="dLog">&mdash;</dd>
         <dt>Free memory</dt><dd id="dHeap">&mdash;</dd>
       </dl>
-      <div class="actions" style="margin-top:14px">
+      <div class="divider"></div>
+      <div class="ctl" data-help="Wi-Fi power|Every transmission is a burst of supply current right next to the sensor. Auto trims power by however much your signal is stronger than needed and goes back to full power if the link ever drops.">
+        <label for="wPow">Wi-Fi power</label>
+        <select id="wPow">
+          <option value="-1">Auto (recommended)</option>
+          <option value="20">20.5 dBm (full)</option>
+          <option value="17">17 dBm</option>
+          <option value="14">14 dBm</option>
+          <option value="11">11 dBm</option>
+          <option value="8">8 dBm</option>
+        </select><span></span>
+      </div>
+      <div class="ctl" data-help="Radio sleep|Power saving switches the radio off and on around ten times a second, and each switch is a current step the sensor can hear. Always awake draws a steady ~50 mA more, which a USB supply won't notice.">
+        <label for="wSleep">Radio</label>
+        <select id="wSleep"><option value="0">Always awake (quieter)</option><option value="1">Power saving</option></select><span></span>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="wApply" type="button">Apply</button>
+        <span class="saved" id="wSaved">Saved &#10003;</span>
+      </div>
+      <div class="divider"></div>
+      <div class="actions">
         <a class="btn" href="/update" target="_blank" data-help="Firmware update|Upload a compiled .bin from the browser (Arduino IDE: Sketch > Export Compiled Binary). Hard-refresh this page afterwards.">Update firmware</a>
         <button class="btn danger" id="wifiReset" type="button">Reset Wi-Fi</button>
       </div>
@@ -654,9 +677,16 @@ async function loadLog() {
 // ===================================================================
 //  Polling
 // ===================================================================
-let lastTimePush = 0, tunePolling = false;
+// Every poll makes the detector transmit a reply right next to the sensor,
+// so poll gently: 5 s is plenty for lightning, and a hidden tab backs off.
+const POLL_MS = 5000, POLL_HIDDEN_MS = 30000;
+let lastTimePush = 0, tunePolling = false, pollTimer = null, polling = false;
+function schedulePoll(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) schedulePoll(300); });
 
 async function poll() {
+  if (polling) return;
+  polling = true;
   try {
     const st = await api('/api/state' + (seq !== null ? '?since=' + seq : ''));
     if (gen !== null && (st.gen !== gen || st.reload)) {
@@ -676,9 +706,10 @@ async function poll() {
   } catch (e) {
     setLink(false);
   }
+  polling = false;
   renderStatus();
   if (dirty || Date.now() - lastRender > 30000) renderData();
-  setTimeout(poll, document.hidden ? 10000 : 2000);
+  schedulePoll(document.hidden ? POLL_HIDDEN_MS : POLL_MS);
 }
 
 function setLink(ok) {
@@ -716,7 +747,7 @@ function renderStatus() {
 
   // tiles fed by the device
   $('tDist').textContent = S.sensor ? fmtNum(S.disturbersHr) : '—';
-  $('tDistS').textContent = 'last hour · ' + fmtNum(S.disturbers) + ' total';
+  $('tDistS').textContent = 'last hour · ' + fmtNum(S.distTxHr || 0) + ' near Wi-Fi';
   $('tNoise').textContent = S.sensor ? S.nf + ' / 7' : '—';
   const noisyNow = S.noiseAge >= 0 && S.noiseAge < 10;
   $('tNoiseS').textContent = noisyNow ? 'noise too high now'
@@ -729,7 +760,10 @@ function renderStatus() {
 
   // device panel
   $('dFw').textContent = 'v' + S.fw;
-  $('dRssi').textContent = S.rssi + ' dBm';
+  $('dRssi').textContent = S.rssi + ' dBm (' + (S.rssi >= -60 ? 'strong' : S.rssi >= -72 ? 'fair' : 'weak') + ')';
+  $('dTx').textContent = S.txDbm.toFixed(1) + ' dBm · ' +
+    (S.txLocked ? 'full power: the link dropped at a lower setting' : S.wifiPower < 0 ? 'auto' : 'fixed') +
+    ' · ' + (S.wifiSleep ? 'power saving' : 'always awake');
   $('dTime').textContent = S.timeValid ? new Date(devNow * 1000).toLocaleString() : 'not set yet';
   $('dUp').textContent = dur(S.up);
   $('dHeap').textContent = fmtNum(S.heap) + ' bytes';
@@ -1220,6 +1254,7 @@ function fillSettings() {
   nfSub();
   $('dIp').textContent = CFG.ip + ' · ' + CFG.host + '.local';
   $('capSel').value = CFG.tuneCap >= 0 ? CFG.tuneCap : 0;
+  $('wPow').value = CFG.wifiPower; $('wSleep').value = CFG.wifiSleep;
 }
 $('sDefaults').onclick = () => {
   $('sOut').value = 0; $('sNf').value = 2; $('sWd').value = 2; $('sSr').value = 2; $('sMin').value = 1;
@@ -1332,6 +1367,7 @@ $('simBtn').onclick = async () => {
   try {
     const r = await post('/api/simulate');
     $('simNote').textContent = 'Test strike at ' + fmtDist(r.d) + (S && !S.timeValid ? ' (waiting for the clock)' : '');
+    schedulePoll(300);
     setTimeout(() => $('simNote').textContent = '', 4000);
   } catch (e) { alert('Simulate failed: ' + e.message); }
 };
@@ -1346,6 +1382,16 @@ $('wifiReset').onclick = async () => {
   alert('Wi-Fi cleared. Join the LightningDetector-Setup network to set it up again.');
 };
 $('csvBtn').onclick = downloadCsv;
+$('wApply').onclick = async () => {
+  const body = { wifiPower: $('wPow').value, wifiSleep: $('wSleep').value };
+  try {
+    const r = await post('/api/config', body);
+    if (!r.ok) throw new Error(r.err || 'failed');
+    CFG.wifiPower = +body.wifiPower; CFG.wifiSleep = +body.wifiSleep;
+    const s = $('wSaved'); s.classList.add('show'); setTimeout(() => s.classList.remove('show'), 1800);
+    schedulePoll(1500);
+  } catch (e) { alert('Could not save: ' + e.message); }
+};
 $('moreBtn').onclick = () => { logLimit += 300; renderLog(inWindow()); };
 
 // ---- window + test toggle ----
@@ -1414,7 +1460,7 @@ window.addEventListener('resize', () => { drawChart(inWindow()); });
   renderStatus();
   renderData();
   setInterval(() => { if (S) renderStatus(); }, 1000);
-  setTimeout(poll, 2000);
+  schedulePoll(POLL_MS);
 })();
 </script>
 </body></html>
