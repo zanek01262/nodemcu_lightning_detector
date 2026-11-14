@@ -17,7 +17,8 @@
        AS3935 SI    -> 3V3          selects I2C (GND would select SPI)
        AS3935 A0,A1 -> 3V3          I2C address 0x03
        EN_V (if the board has it) -> 3V3   (AS3935 internal regulator on)
-       CS, MISO     -> not connected
+       CS           -> G            unused in I2C mode, but must not float
+       MISO         -> not connected
 
    WIRING — SPI (uncomment AS3935_USE_SPI below; SparkFun v2 is SPI only)
    ----------------------------------------------------------------------

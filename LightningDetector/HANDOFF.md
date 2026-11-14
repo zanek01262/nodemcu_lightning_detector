@@ -41,7 +41,9 @@ supply, and away from monitors, LED drivers, chargers, and inverters. A
 ferrite on the USB cable helps. Lots of "disturbers" or a high noise floor on
 the dashboard means move it.
 
-See `wiring_diagram.svg`.
+See `wiring_diagram.svg`. The root `README.md` has the full hardware guide:
+per-board notes, SPI wiring, I2C addresses, power, placement and noise, LED
+patterns and a hardware troubleshooting table.
 
 ---
 
