@@ -9,39 +9,51 @@
    Setup flow:
      1. On first boot (no saved WiFi), the device raises an open SoftAP
         named AP_SSID and serves a setup page at AP_IP (captive portal).
-     2. Pick your network, enter the password; the device saves it,
-        reboots and joins your WiFi.
+     2. Pick your network, enter its password and choose a device
+        password; the device saves them, reboots and joins your WiFi.
      3. Dashboard at http://lightning.local (or the device's IP): live
         status, a map with distance rings around your sensor location,
         a distance-over-time chart, the strike log and sensor settings.
+        Viewing is open; changing anything needs the device password.
+
+   The setup network only comes back on purpose: "Reset Wi-Fi" on the
+   dashboard, or the reset button pressed twice within 5 seconds.
 
    The AS3935 reports the distance to the leading edge of a storm (5-40 km,
    or "overhead"), not a direction — hence rings around the sensor rather
-   than points. The blue LED (D4) flashes on each strike and blinks
-   slowly while the setup network is up.
+   than points. The blue LED (D4) flashes on each strike, blinks slowly
+   while the setup network is up and double-blinks while WiFi is down.
    ===================================================================== */
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
-#include <ESP8266HTTPUpdateServer.h>   // browser-based OTA at /update
 #include <DNSServer.h>
+#include <StreamString.h>
+#include <Updater.h>
 #include <time.h>
 #include <sys/time.h>
 
 #include "config.h"
 #include "settings.h"
 #include "storage.h"
+#include "auth.h"
 #include "as3935.h"
 #include "webpages.h"
 
 ESP8266WebServer        server(80);
-ESP8266HTTPUpdateServer httpUpdater;
 DNSServer               dnsServer;
 
 bool   apMode          = false;
 String scanResultsJson = "[]";   // cached network scan for the setup page
+
+// Why the setup network is up (shown on the setup page) and when it came up.
+static bool     s_setupForced = false;   // reset pressed twice
+static bool     s_freshFailed = false;   // just-saved network would not join
+static uint32_t s_apStartMs   = 0;
+// STA mode: network services start on the first successful join.
+static bool     s_netStarted  = false;
 
 // Deferred reboot: handlers set this instead of calling ESP.restart()
 // directly, so the HTTP response fully flushes before the device goes down.
@@ -182,14 +194,19 @@ static void ledFlash(uint32_t ms) {
   if (!s_ledOffAt) s_ledOffAt = 1;
 }
 static void ledUpdate() {
+  uint32_t now = millis();
   if (apMode) {                               // setup mode: short blink each second
-    digitalWrite(PIN_LED, (millis() % 1000) < 80 ? LED_ON : !LED_ON);
+    digitalWrite(PIN_LED, (now % 1000) < 80 ? LED_ON : !LED_ON);
     return;
   }
-  if (s_ledOffAt && (int32_t)(millis() - s_ledOffAt) >= 0) {
-    digitalWrite(PIN_LED, !LED_ON);
-    s_ledOffAt = 0;
+  if (s_ledOffAt && (int32_t)(now - s_ledOffAt) >= 0) s_ledOffAt = 0;
+  if (s_ledOffAt) { digitalWrite(PIN_LED, LED_ON); return; }   // strike flash
+  if (WiFi.status() != WL_CONNECTED) {        // offline: two short blinks every 2 s
+    uint32_t p = now % 2000;
+    digitalWrite(PIN_LED, (p < 80 || (p >= 240 && p < 320)) ? LED_ON : !LED_ON);
+    return;
   }
+  digitalWrite(PIN_LED, !LED_ON);
 }
 
 static void commitStrike(const StrikeRow& r) {
@@ -346,7 +363,93 @@ static void onTuneDone() {
 // =====================================================================
 //  WEB ROUTES — shared
 // =====================================================================
+// Appends s as a JSON string (quotes included). Control characters are
+// dropped: nothing here needs them and they would break the page's JSON.
+static void jsonStr(String& out, const String& s) {
+  out += '"';
+  for (size_t k = 0; k < s.length(); k++) {
+    char c = s[k];
+    if (c == '"' || c == '\\') out += '\\';
+    if ((uint8_t)c >= 0x20) out += c;
+  }
+  out += '"';
+}
+
+static void sendErr(int code, const char* err) {
+  String j = "{\"ok\":false,\"err\":";
+  jsonStr(j, err);
+  j += '}';
+  server.send(code, "application/json", j);
+}
+
+// ---- Request guard ----------------------------------------------------
+// Host check: a web page elsewhere can point its own domain at this
+// device's address (DNS rebinding) and then read its replies. Such
+// requests still carry that domain in Host, so only names that mean this
+// device are accepted.
+static bool hostOk() {
+#if HOST_CHECK
+  String h = server.hostHeader();
+  if (h.length() == 0) return true;          // HTTP/1.0 tools; browsers always send Host
+  int colon = h.indexOf(':');
+  if (colon >= 0) h = h.substring(0, colon);
+  h.toLowerCase();
+  if (h.endsWith(".")) h.remove(h.length() - 1);
+  if (h == WiFi.localIP().toString()) return true;
+  // First label: the hostname, or what mDNS made of it after a name
+  // clash on the network ("lightning-2").
+  int dot = h.indexOf('.');
+  String label = dot < 0 ? h : h.substring(0, dot);
+  if (!label.startsWith(MDNS_HOSTNAME)) return false;
+  if (dot < 0) return true;
+  String suffix = h.substring(dot + 1);
+  static const char* const kSuffixes[] = HOST_SUFFIXES;
+  for (const char* s : kSuffixes) if (suffix == s) return true;
+  return false;
+#else
+  return true;
+#endif
+}
+
+// 0 when the request may go ahead, else the HTTP status to refuse it with.
+//  X-LD   : sent by this device's own pages. Another site cannot add a
+//           custom header to a request here without the browser first
+//           asking permission (CORS), which this server never grants.
+//  X-Auth : the sign-in token from /api/login.
+static int accessCode(uint8_t access) {
+  if (!hostOk()) return 421;
+  if (access >= ACC_XHR && !server.hasHeader("X-LD")) return 403;
+  if (access >= ACC_OWNER) {
+    if (!authHasPassword()) return 428;
+    if (!authTokenOk(server.header("X-Auth"))) return 401;
+  }
+  return 0;
+}
+
+static bool guard(uint8_t access) {
+  int code = accessCode(access);
+  switch (code) {
+    case 0:   return true;
+    case 421: server.send(421, "text/plain",
+                "Open this detector by its own address: http://" MDNS_HOSTNAME ".local or its IP.");
+              break;
+    case 403: sendErr(403, "requests must come from the detector's own page"); break;
+    case 428: sendErr(428, "set a device password first"); break;
+    default:  sendErr(401, "locked: sign in with the device password"); break;
+  }
+  return false;
+}
+
+static void route(const char* uri, HTTPMethod method, void (*fn)(), uint8_t access) {
+  server.on(uri, method, [fn, access]() { if (guard(access)) fn(); });
+}
+
+static void collectHeaders() {
+  server.collectHeaders(F("X-Auth"), F("X-LD"));
+}
+
 static void handleRoot() {
+  server.sendHeader("Cache-Control", "no-cache");   // a stale page looks like a frozen device
   if (apMode) server.send_P(200, "text/html", SETUP_PAGE);
   else        server.send_P(200, "text/html", DASH_PAGE);
 }
@@ -356,14 +459,9 @@ static void buildScanJson(int n) {
   String j = "[";
   for (int i = 0; i < n; i++) {
     if (i) j += ',';
-    j += "{\"ssid\":\"";
-    String s = WiFi.SSID(i);
-    for (size_t k = 0; k < s.length(); k++) {
-      char c = s[k];
-      if (c == '"' || c == '\\') j += '\\';
-      if ((uint8_t)c >= 0x20) j += c;
-    }
-    j += "\",\"rssi\":" + String(WiFi.RSSI(i)) +
+    j += "{\"ssid\":";
+    jsonStr(j, WiFi.SSID(i));
+    j += ",\"rssi\":" + String(WiFi.RSSI(i)) +
          ",\"lock\":" + String(WiFi.encryptionType(i) == ENC_TYPE_NONE ? 0 : 1) +
          "}";
   }
@@ -384,17 +482,48 @@ static void handleRescan() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// What the setup page needs to know: is a device password set already,
+// which network is saved, and did it just fail to join.
+static void handleInfo() {
+  String j = "{\"hasPass\":";
+  j += authHasPassword() ? '1' : '0';
+  j += ",\"ssid\":";
+  jsonStr(j, settings.wifiSsid);
+  j += ",\"failed\":";
+  j += s_freshFailed ? '1' : '0';
+  j += ",\"forced\":";
+  j += s_setupForced ? '1' : '0';
+  j += ",\"fw\":\"" FW_VERSION "\"}";
+  server.send(200, "application/json", j);
+}
+
 static void handleSave() {
-  if (!server.hasArg("ssid") || server.arg("ssid").length() == 0) {
-    server.send(400, "application/json", "{\"ok\":false,\"err\":\"missing network\"}");
-    return;
+  if (!server.hasHeader("X-LD")) { sendErr(403, "requests must come from the setup page"); return; }
+  String ssid = server.arg("ssid"), pass = server.arg("pass"), dev = server.arg("devpass");
+  if (ssid.length() == 0 || ssid.length() > 32) {
+    sendErr(400, "the network name must be 1 to 32 characters"); return;
   }
-  settings.wifiSsid = server.arg("ssid");
-  settings.wifiPass = server.arg("pass");
+  // Same network, password left blank: keep the saved password.
+  if (pass.length() == 0 && ssid == settings.wifiSsid) pass = settings.wifiPass;
+  if (pass.length() > 64) { sendErr(400, "Wi-Fi passwords are at most 64 characters"); return; }
+  if (dev.length()) {
+    if (dev.length() < PASS_MIN_LEN || dev.length() > PASS_MAX_LEN) {
+      sendErr(400, "the device password must be 8 to 64 characters"); return;
+    }
+  } else if (!authHasPassword()) {
+    sendErr(400, "choose a device password (8 or more characters)"); return;
+  }
+  // Setup is the recovery path for a forgotten device password, so it may
+  // replace one without the old: reaching it takes the reset button or a
+  // signed-in "Reset Wi-Fi".
+  if (dev.length()) authSetPassword(dev);
+  settings.wifiSsid  = ssid;
+  settings.wifiPass  = pass;
+  settings.wifiFresh = 1;                 // first join decides: back to setup if it fails
   bool ok = saveSettings();
-  server.send(200, "application/json",
-              ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"save failed (filesystem)\"}");
-  if (ok) g_rebootAt = millis() + 1500;   // reboot from loop(), post-flush
+  if (!ok) { sendErr(500, "save failed (filesystem)"); return; }
+  server.send(200, "application/json", "{\"ok\":true}");
+  g_rebootAt = millis() + 1500;           // reboot from loop(), post-flush
 }
 
 // ---- STA / dashboard routes -----------------------------------------
@@ -424,7 +553,7 @@ static void handleState() {
     "\"noiseSecs\":%lu,\"noiseHr\":%lu,\"noiseAge\":%ld,"
     "\"pending\":%u,\"dropped\":%lu,\"gen\":%lu,\"reload\":%d,"
     "\"rssi\":%d,\"txDbm\":%.1f,\"txLocked\":%d,\"wifiPower\":%d,\"wifiSleep\":%u,"
-    "\"heap\":%u,\"new\":[",
+    "\"hasPass\":%d,\"auth\":%d,\"heap\":%u,\"new\":[",
     (unsigned long)(millis() / 1000UL), (unsigned long)time(nullptr),
     timeIsValid() ? 1 : 0, storageReady() ? 1 : 0,
     asPresent() ? 1 : 0, asBusName(), asDefaultsOk() ? 1 : 0, asCalibOk() ? 1 : 0,
@@ -438,6 +567,7 @@ static void handleState() {
     s_pendingN, (unsigned long)s_pendingDropped, (unsigned long)s_gen,
     reload ? 1 : 0,
     WiFi.RSSI(), (double)s_txDbm, s_txLocked ? 1 : 0, settings.wifiPower, settings.wifiSleep,
+    authHasPassword() ? 1 : 0, authTokenOk(server.header("X-Auth")) ? 1 : 0,
     ESP.getFreeHeap());
   // "seq" is the next strike the page should ask for. It follows the rows
   // actually sent, so if the buffer ever filled up the rest come next poll.
@@ -529,6 +659,7 @@ static bool argU8(const char* name, uint8_t& out) {
 }
 
 static void handleConfigSet() {
+  const Settings before = settings;      // flash is only written if something changed
   // Location: validate both halves before changing anything.
   if (server.hasArg("lat") || server.hasArg("lon")) {
     float la = server.arg("lat").toFloat(), lo = server.arg("lon").toFloat();
@@ -574,7 +705,7 @@ static void handleConfigSet() {
       asCalibrate();
     }
   }
-  bool ok = saveSettings();
+  bool ok = settingsEqual(before, settings) || saveSettings();
   server.send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"save failed\"}");
 }
 
@@ -604,6 +735,12 @@ static void handleTuneStart() {
 static void handleSimulate() {
   // A test strike for checking the map and log without waiting for a storm.
   // Logged with the test flag; the dashboard labels it and can hide it.
+  // Rate-limited: each one is a flash write, and a flood would push real
+  // strikes out of the log.
+  static uint32_t lastMs = 0;
+  static bool     any    = false;
+  if (any && millis() - lastMs < SIMULATE_MIN_MS) { sendErr(429, "one test strike a second, please"); return; }
+  lastMs = millis(); any = true;
   static const uint8_t kDist[] = { 1, 5, 6, 8, 10, 12, 14, 17, 20, 24, 27, 31, 34, 37, 40 };
   uint8_t d = kDist[random(0, sizeof(kDist))];
   uint32_t e = (uint32_t)random(2000, 400000);
@@ -647,12 +784,130 @@ static void handleRegs() {
 }
 
 static void handleReset() {
-  // Clears saved WiFi -> next boot raises the setup network.
-  settings.wifiSsid = "";
-  settings.wifiPass = "";
+  // Clears saved WiFi -> next boot raises the setup network. The device
+  // password stays.
+  settings.wifiSsid  = "";
+  settings.wifiPass  = "";
+  settings.wifiFresh = 0;
   saveSettings();
   server.send(200, "application/json", "{\"ok\":true}");
   g_rebootAt = millis() + 800;
+}
+
+// ---- Sign-in ----------------------------------------------------------
+// Wrong passwords slow the next try down (1 s, then 30 s after 5 in a
+// row), so guessing a decent password over the network is hopeless.
+static uint8_t  s_loginFails  = 0;
+static uint32_t s_loginWaitMs = 0, s_loginFailAt = 0;
+
+static bool loginThrottled() {
+  if (!s_loginFails || millis() - s_loginFailAt >= s_loginWaitMs) return false;
+  uint32_t left = (s_loginWaitMs - (millis() - s_loginFailAt) + 999) / 1000;
+  char b[96];
+  snprintf(b, sizeof(b), "{\"ok\":false,\"err\":\"too many wrong tries: wait %lu s\",\"wait\":%lu}",
+           (unsigned long)left, (unsigned long)left);
+  server.sendHeader("Retry-After", String(left));
+  server.send(429, "application/json", b);
+  return true;
+}
+
+static void loginFailed() {
+  if (s_loginFails < 255) s_loginFails++;
+  s_loginFailAt = millis();
+  s_loginWaitMs = s_loginFails >= LOGIN_LOCK_AFTER ? LOGIN_LOCK_MS : LOGIN_DELAY_MS;
+  Serial.printf("[AUTH] wrong password (%u in a row)\n", s_loginFails);
+}
+
+static void sendToken() {
+  String j = "{\"ok\":true,\"token\":";
+  jsonStr(j, authToken());
+  j += '}';
+  server.send(200, "application/json", j);
+}
+
+static void handleLogin() {
+  if (!authHasPassword()) { sendErr(428, "set a device password first"); return; }
+  if (loginThrottled()) return;
+  if (!authCheckPassword(server.arg("pass"))) { loginFailed(); sendErr(401, "wrong password"); return; }
+  s_loginFails = 0;
+  sendToken();
+}
+
+// Set the first password (no password yet), or change it (needs the
+// current one). A new password makes a new token: every other browser is
+// signed out.
+static void handlePassword() {
+  String nw = server.arg("new");
+  if (nw.length() < PASS_MIN_LEN || nw.length() > PASS_MAX_LEN) {
+    sendErr(400, "the password must be 8 to 64 characters"); return;
+  }
+  if (authHasPassword()) {
+    if (loginThrottled()) return;
+    if (!authCheckPassword(server.arg("old"))) { loginFailed(); sendErr(401, "the current password is wrong"); return; }
+    s_loginFails = 0;
+  }
+  authSetPassword(nw);
+  if (!saveSettings()) { sendErr(500, "save failed (filesystem)"); return; }
+  Serial.println(F("[AUTH] device password set"));
+  sendToken();
+}
+
+// ---- Firmware update ------------------------------------------------
+// Replaces the stock ESP8266HTTPUpdateServer so the upload needs the same
+// sign-in token as every other change. The check happens when the upload
+// starts; a refused upload is read and thrown away, never written.
+static bool   s_updAllowed = false, s_updStarted = false;
+static String s_updErr;
+
+static String updaterError() {
+  StreamString s;
+  Update.printError(s);
+  s.trim();
+  return s.length() ? String(s.c_str()) : String("update failed");
+}
+
+static void handleUpdateUpload() {
+  HTTPUpload& up = server.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    s_updStarted = true;
+    s_updErr     = "";
+    s_updAllowed = accessCode(ACC_OWNER) == 0;
+    if (!s_updAllowed) { Serial.println(F("[OTA] refused: not signed in")); return; }
+    Serial.printf("[OTA] receiving %s\n", up.filename.c_str());
+    WiFiUDP::stopAll();
+    uint32_t space = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    if (!Update.begin(space, U_FLASH)) s_updErr = updaterError();
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (s_updAllowed && !s_updErr.length() &&
+        Update.write(up.buf, up.currentSize) != up.currentSize) s_updErr = updaterError();
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (s_updAllowed && !s_updErr.length() && !Update.end(true)) s_updErr = updaterError();
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    if (s_updAllowed) Update.end();
+    s_updErr = "upload aborted";
+  }
+  yield();
+}
+
+static void handleUpdateDone() {
+  bool started = s_updStarted, allowed = s_updAllowed;
+  s_updStarted = s_updAllowed = false;
+  if (!guard(ACC_OWNER)) return;
+  if (!started || !allowed) { sendErr(400, "no firmware file received"); return; }
+  if (s_updErr.length()) {
+    Serial.printf("[OTA] failed: %s\n", s_updErr.c_str());
+    sendErr(500, s_updErr.c_str());
+    return;
+  }
+  Serial.println(F("[OTA] update written -> rebooting"));
+  server.send(200, "application/json", "{\"ok\":true}");
+  g_rebootAt = millis() + 1000;
+}
+
+// Old bookmarks: the update page is now part of the dashboard.
+static void handleOldUpdate() {
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
 }
 
 static void handleNotFound() {
@@ -670,6 +925,7 @@ static void handleNotFound() {
 // =====================================================================
 static void startAPMode() {
   apMode = true;
+  s_apStartMs = millis();
   // AP_STA, not AP: the STA interface must be up for WiFi.scanNetworks().
   WiFi.mode(WIFI_AP_STA);
   WiFi.disconnect();          // idle STA: stops failed-join retries from
@@ -683,28 +939,36 @@ static void startAPMode() {
 
   dnsServer.start(53, "*", AP_IP);      // every hostname resolves to us
 
+  // No host check here: phones probe captive-portal URLs on other names,
+  // and this network has no internet for a rebinding attack to come from.
   server.on("/",       handleRoot);
   server.on("/scan",   handleScan);
   server.on("/rescan", handleRescan);
+  server.on("/info",   handleInfo);
   server.on("/save",   HTTP_POST, handleSave);
   server.onNotFound(handleNotFound);
+  collectHeaders();
   server.begin();
 
-  Serial.printf("[AP] setup network \"%s\" at http://%s\n", AP_SSID, AP_IP.toString().c_str());
+  Serial.printf("[AP] setup network \"%s\" at http://%s (%s)\n", AP_SSID, AP_IP.toString().c_str(),
+                s_setupForced ? "reset pressed twice" : s_freshFailed ? "saved network would not join"
+                                                                      : "no network saved");
 }
 
-// With saved credentials, the fallback AP keeps retrying the saved network
-// while nobody is on the setup page (a join moves the radio to the router's
-// channel, which would drop a phone on the AP), and reboots into normal
-// mode once it joins.
+// Only when a network is saved (setup entered with reset-twice, or a
+// just-saved network that would not join): after a grace period, retry it
+// while nobody is on the setup page (a join moves the radio to the
+// router's channel, which would drop a phone on the AP), and reboot into
+// normal mode once it joins.
 static void apRetrySavedNetwork() {
   static uint32_t lastTry = 0, tryStart = 0;
   static bool trying = false;
   if (settings.wifiSsid.length() == 0 || g_rebootAt) return;
+  if (s_setupForced && millis() - s_apStartMs < AP_SETUP_GRACE_MS) return;
   uint8_t clients = WiFi.softAPgetStationNum();
   if (trying) {
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println(F("[AP] saved network is back -> rebooting into normal mode"));
+      Serial.println(F("[AP] saved network joined -> rebooting into normal mode"));
       g_rebootAt = millis() + 500;
     } else if (clients > 0 || millis() - tryStart > AP_RETRY_JOIN_MS) {
       WiFi.disconnect();
@@ -721,10 +985,15 @@ static void apRetrySavedNetwork() {
   }
 }
 
-static bool startSTAMode() {
+// mustJoin: the network was just saved on the setup page. Give the first
+// join WIFI_CONNECT_TIMEOUT_MS and report failure (back to setup). After
+// that, the detector never leaves normal mode on its own: a power cut or
+// a router reboot just means retrying until the network is back.
+static bool startSTAMode(bool mustJoin) {
   apMode = false;
   WiFi.mode(WIFI_STA);
   WiFi.hostname(MDNS_HOSTNAME);
+  WiFi.setAutoReconnect(true);
   // Join at full power; radioUpdate() trims it once the link is up.
   WiFi.setOutputPower(WIFI_MAX_DBM);
   s_txDbm = WIFI_MAX_DBM;
@@ -733,33 +1002,41 @@ static bool startSTAMode() {
   WiFi.config(STATIC_IP, STATIC_GATEWAY, STATIC_SUBNET, STATIC_DNS);
 #endif
   WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPass.c_str());
-  Serial.printf("[WiFi] joining \"%s\"", settings.wifiSsid.c_str());
+  Serial.printf("[WiFi] joining \"%s\"\n", settings.wifiSsid.c_str());
 
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-    Serial.print('.');
-    serviceSensor();              // first-boot tuning / early strikes
-    if (asTuneUpdate()) onTuneDone();
+  if (mustJoin) {
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+      delay(250);
+      serviceSensor();              // first-boot tuning / early strikes
+      if (asTuneUpdate()) onTuneDone();
+      doubleResetDisarm();
+    }
+    if (WiFi.status() != WL_CONNECTED) return false;
+    settings.wifiFresh = 0;         // proven: from now on, never back to setup by itself
+    saveSettings();
   }
-  Serial.println();
-  if (WiFi.status() != WL_CONNECTED) return false;
 
-  startNTP();
+  startNTP();                       // SNTP starts working once the link is up
 
-  server.on("/",             handleRoot);
-  server.on("/api/state",    handleState);
-  server.on("/api/strikes",  handleStrikes);
-  server.on("/api/config",   HTTP_GET,  handleConfigGet);
-  server.on("/api/config",   HTTP_POST, handleConfigSet);
-  server.on("/api/tune",     HTTP_GET,  handleTuneGet);
-  server.on("/api/tune",     HTTP_POST, handleTuneStart);
-  server.on("/api/simulate", HTTP_POST, handleSimulate);
-  server.on("/api/clearlog", HTTP_POST, handleClearLog);
-  server.on("/api/time",     HTTP_POST, handleTimeSet);
-  server.on("/api/regs",     handleRegs);
-  server.on("/api/reset",    HTTP_POST, handleReset);
+  route("/",             HTTP_GET,  handleRoot,       ACC_OPEN);
+  route("/api/state",    HTTP_GET,  handleState,      ACC_OPEN);
+  route("/api/strikes",  HTTP_GET,  handleStrikes,    ACC_OPEN);
+  route("/api/config",   HTTP_GET,  handleConfigGet,  ACC_OPEN);
+  route("/api/tune",     HTTP_GET,  handleTuneGet,    ACC_OPEN);
+  route("/api/regs",     HTTP_GET,  handleRegs,       ACC_OPEN);
+  route("/api/time",     HTTP_POST, handleTimeSet,    ACC_XHR);
+  route("/api/login",    HTTP_POST, handleLogin,      ACC_XHR);
+  route("/api/password", HTTP_POST, handlePassword,   ACC_XHR);
+  route("/api/config",   HTTP_POST, handleConfigSet,  ACC_OWNER);
+  route("/api/tune",     HTTP_POST, handleTuneStart,  ACC_OWNER);
+  route("/api/simulate", HTTP_POST, handleSimulate,   ACC_OWNER);
+  route("/api/clearlog", HTTP_POST, handleClearLog,   ACC_OWNER);
+  route("/api/reset",    HTTP_POST, handleReset,      ACC_OWNER);
+  route("/update",       HTTP_GET,  handleOldUpdate,  ACC_OPEN);
+  server.on("/api/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
   server.onNotFound(handleNotFound);
+  collectHeaders();
   // Timestamp every request: its reply is a transmit burst, which is what
   // the "near Wi-Fi traffic" disturber count is measured against.
   // (No HTTP keep-alive: this server handles one client at a time, and an
@@ -769,24 +1046,69 @@ static bool startSTAMode() {
     s_reqSeen   = true;
     return ESP8266WebServer::CLIENT_REQUEST_CAN_CONTINUE;
   });
-#ifdef OTA_PASSWORD
-  httpUpdater.setup(&server, "/update", "admin", OTA_PASSWORD);
-#else
-  httpUpdater.setup(&server, "/update");
-#endif
   server.begin();
-
-  if (MDNS.begin(MDNS_HOSTNAME)) MDNS.addService("http", "tcp", 80);
-
-  ArduinoOTA.setHostname(MDNS_HOSTNAME);
-#ifdef OTA_PASSWORD
-  ArduinoOTA.setPassword(OTA_PASSWORD);
-#endif
-  ArduinoOTA.begin();
-
-  Serial.printf("[WiFi] connected: http://%s  (http://" MDNS_HOSTNAME ".local)\n",
-                WiFi.localIP().toString().c_str());
   return true;
+}
+
+// STA mode, every loop: start the network services on the first join, and
+// start a fresh join attempt if the link has been down for a while (the
+// SDK's own reconnect gives up in some states, e.g. after a wrong-password
+// reply from a router that was mid-reboot).
+static void staWatch() {
+  static uint32_t downSince = 0, lastBegin = 0;
+  static bool     wasUp     = false;
+  uint32_t now = millis();
+  bool up = WiFi.status() == WL_CONNECTED;
+
+  if (up && !wasUp) {
+    Serial.printf("[WiFi] connected: http://%s  (http://" MDNS_HOSTNAME ".local)\n",
+                  WiFi.localIP().toString().c_str());
+    if (!s_netStarted) {
+      s_netStarted = true;
+      // mDNS restarts itself on later reconnects once begun.
+      if (MDNS.begin(MDNS_HOSTNAME)) MDNS.addService("http", "tcp", 80);
+#ifdef OTA_PASSWORD
+      ArduinoOTA.setHostname(MDNS_HOSTNAME);
+      ArduinoOTA.setPassword(OTA_PASSWORD);
+      ArduinoOTA.begin();
+#endif
+    }
+  } else if (!up && wasUp) {
+    Serial.println(F("[WiFi] link lost - retrying"));
+  }
+  wasUp = up;
+
+  if (up) { downSince = 0; return; }
+  if (!downSince) { downSince = now | 1; lastBegin = now; return; }
+  if (now - downSince >= STA_REJOIN_MS && now - lastBegin >= STA_REJOIN_MS) {
+    Serial.println(F("[WiFi] still offline -> new join attempt"));
+    WiFi.begin(settings.wifiSsid.c_str(), settings.wifiPass.c_str());
+    lastBegin = now;
+  }
+}
+
+// Reset pressed twice within SETUP_DOUBLE_RESET_MS -> setup network. The
+// first press leaves a mark in RTC memory (which survives a reset but not
+// a power cut); the mark is wiped once the window has passed.
+static bool     s_drdArmed = false;
+static const uint32_t DRD_MARK = 0x4C445253UL;   // "LDRS"
+
+static bool doubleResetCheck() {
+  uint32_t mark = 0;
+  ESP.rtcUserMemoryRead(SETUP_RTC_BLOCK, &mark, sizeof(mark));
+  bool byButton = ESP.getResetInfoPtr()->reason == REASON_EXT_SYS_RST;
+  bool twice    = byButton && mark == DRD_MARK;
+  mark = (byButton && !twice) ? DRD_MARK : 0;
+  ESP.rtcUserMemoryWrite(SETUP_RTC_BLOCK, &mark, sizeof(mark));
+  s_drdArmed = mark == DRD_MARK;
+  return twice;
+}
+
+static void doubleResetDisarm() {
+  if (!s_drdArmed || millis() < SETUP_DOUBLE_RESET_MS) return;
+  uint32_t mark = 0;
+  ESP.rtcUserMemoryWrite(SETUP_RTC_BLOCK, &mark, sizeof(mark));
+  s_drdArmed = false;
 }
 
 // =====================================================================
@@ -800,6 +1122,7 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, !LED_ON);
   randomSeed(ESP.random());
+  s_setupForced = doubleResetCheck();
 
   WiFi.persistent(false);   // creds live in LittleFS; stop the SDK
                             // rewriting them to flash on every connect
@@ -815,11 +1138,15 @@ void setup() {
   }
   s_minuteStart = millis();
 
-  if (settings.wifiSsid.length() == 0) {
+  if (s_setupForced) {
+    Serial.println(F("[LD] reset pressed twice -> setup network"));
+    startAPMode();
+  } else if (settings.wifiSsid.length() == 0) {
     Serial.println(F("[LD] no WiFi saved -> setup network"));
     startAPMode();
-  } else if (!startSTAMode()) {
-    Serial.println(F("[LD] WiFi join failed -> setup network"));
+  } else if (!startSTAMode(settings.wifiFresh)) {
+    Serial.println(F("[LD] the network saved on the setup page would not join -> setup network"));
+    s_freshFailed = true;
     startAPMode();
   }
 }
@@ -829,8 +1156,11 @@ void loop() {
     dnsServer.processNextRequest();
     apRetrySavedNetwork();
   } else {
-    MDNS.update();
-    ArduinoOTA.handle();
+    staWatch();
+    if (s_netStarted) MDNS.update();
+#ifdef OTA_PASSWORD
+    if (s_netStarted) ArduinoOTA.handle();
+#endif
     radioUpdate();
   }
   server.handleClient();
@@ -840,6 +1170,7 @@ void loop() {
   sensorHousekeeping();
   flushPending();
   ledUpdate();
+  doubleResetDisarm();
 
   if (g_rebootAt && (int32_t)(millis() - g_rebootAt) >= 0) ESP.restart();
   yield();

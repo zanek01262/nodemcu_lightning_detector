@@ -48,20 +48,56 @@
 //   1.1.0 less self-interference: radio always awake, auto TX power, 5 s
 //         dashboard polling, 80 kHz I2C, 5 min health check, "near Wi-Fi"
 //         disturber counter
-#define FW_VERSION "1.1.0"
+//   1.2.0 security: device password for settings and firmware updates,
+//         host-name check, setup network only on purpose (reset twice),
+//         IDE network upload off unless OTA_PASSWORD is set, rate limits
+#define FW_VERSION "1.2.0"
 
 // ---------- SoftAP provisioning ----------
 #define AP_SSID  "LightningDetector-Setup"
-#define AP_PASS  ""                 // "" = open network; set 8+ chars to lock
+// "" = open setup network. Set 8+ characters here before flashing to
+// encrypt it: your Wi-Fi and device passwords then cross the air encrypted
+// during setup. The setup page tells you nothing about this password, so
+// write it down.
+#define AP_PASS  ""
 static const IPAddress AP_IP(192, 168, 4, 1);
 
+// The setup network only comes up on purpose: on first boot (nothing
+// saved), after "Reset Wi-Fi" on the dashboard, or when the reset button
+// is pressed twice within SETUP_DOUBLE_RESET_MS. A power cut never raises
+// it: the detector just keeps retrying your Wi-Fi.
+#define SETUP_DOUBLE_RESET_MS    5000UL
+#define SETUP_RTC_BLOCK          8      // RTC user memory slot (blocks 64+ belong to the OTA boot loader)
+
 // ---------- WiFi station ----------
-#define WIFI_CONNECT_TIMEOUT_MS  15000UL
-// With saved credentials the fallback AP retries the saved network (only
-// while no phone is on the setup AP) and reboots into normal mode once it
-// joins — after a power cut the router takes minutes to come back.
+// Right after setup, the first join gets this long; if it fails (usually a
+// mistyped password) the setup network comes back with an error message.
+#define WIFI_CONNECT_TIMEOUT_MS  20000UL
+// Offline for this long: start a fresh join attempt.
+#define STA_REJOIN_MS            60000UL
+// Setup entered with reset-twice while a network is saved: after this long
+// with nobody on the setup network, it retries the saved network and goes
+// back to normal mode if it joins.
+#define AP_SETUP_GRACE_MS        (5UL * 60UL * 1000UL)
 #define AP_RETRY_EVERY_MS        60000UL
 #define AP_RETRY_JOIN_MS         20000UL
+
+// ---------- Security ----------
+#define PASS_MIN_LEN       8
+#define PASS_MAX_LEN       64
+#define AUTH_HASH_ROUNDS   2000     // iterated SHA-256 (~0.1 s per check)
+// Wrong password: the next try waits LOGIN_DELAY_MS, and after
+// LOGIN_LOCK_AFTER wrong tries in a row, LOGIN_LOCK_MS.
+#define LOGIN_DELAY_MS     1000UL
+#define LOGIN_LOCK_AFTER   5
+#define LOGIN_LOCK_MS      30000UL
+#define SIMULATE_MIN_MS    1000UL   // at most one test strike a second
+// Host-name check (blocks DNS rebinding): requests must name this device —
+// its IP address, or MDNS_HOSTNAME alone or followed by one of these
+// local-network suffixes (routers register DHCP names under them). Set
+// HOST_CHECK to 0 if you reach the detector under some other name.
+#define HOST_CHECK         1
+#define HOST_SUFFIXES      { "local", "lan", "home", "home.arpa", "localdomain", "internal", "fritz.box" }
 
 // ---- Optional static IP (uncomment + fill to enable) ----
 // #define USE_STATIC_IP
@@ -121,7 +157,10 @@ static const IPAddress AP_IP(192, 168, 4, 1);
 
 // ---------- Identity / OTA ----------
 #define MDNS_HOSTNAME "lightning"   // http://lightning.local
-// #define OTA_PASSWORD "change-me" // uncomment to password OTA + /update
+// Firmware updates normally go through the dashboard (Device panel), which
+// needs the device password. Uploading from the Arduino IDE over the
+// network is OFF unless you set a password for it here:
+// #define OTA_PASSWORD "change-me"
 
 // ---------- Storage paths (LittleFS) ----------
 #define CONFIG_PATH          "/config.json"

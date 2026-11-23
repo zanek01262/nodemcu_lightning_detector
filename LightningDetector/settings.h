@@ -9,6 +9,11 @@
 struct Settings {
   String  wifiSsid;
   String  wifiPass;
+  uint8_t wifiFresh;    // 1 = saved on the setup page, not yet joined once
+  // Device password (see auth.h). Only a salted hash is stored.
+  String  passSalt;     // 32 hex chars
+  String  passHash;     // 64 hex chars
+  String  authToken;    // 32 hex chars, handed to a browser after sign-in
   // AS3935
   uint8_t outdoor;      // 0 = indoor AFE gain, 1 = outdoor
   uint8_t noiseFloor;   // NF_LEV 0..7 (the minimum when auto noise floor is on)
@@ -31,5 +36,6 @@ extern Settings settings;
 void loadSettings();   // fills `settings` from config.json, or defaults
 bool saveSettings();   // writes `settings` to config.json (true on success)
 void clampSettings();  // forces every field into its legal range
+bool settingsEqual(const Settings& a, const Settings& b);   // skip no-op flash writes
 
 #endif // SETTINGS_H

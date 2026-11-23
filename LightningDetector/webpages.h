@@ -76,6 +76,10 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
   .status.ok{color:var(--good)} .status.err{color:var(--bad)}
   .note{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);font-size:12.5px;
     color:var(--faint);line-height:1.5}
+  .hint{margin-top:7px;font-size:12.5px;color:var(--faint);line-height:1.45}
+  .banner{margin-top:18px;padding:11px 13px;border-radius:11px;font-size:13.5px;line-height:1.45;display:none}
+  .banner.err{display:block;background:rgba(255,123,123,.1);border:1px solid rgba(255,123,123,.35);color:#ffc2c2}
+  .banner.info{display:block;background:var(--bolt-soft);border:1px solid rgba(255,216,74,.3);color:var(--ink)}
 </style></head>
 <body>
   <main class="panel">
@@ -83,6 +87,7 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
       <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 2 4 13.5h6.5L9 22l10-12.5h-6.6L13.5 2z" fill="#ffd84a"/></svg></div>
       <div><h1>Lightning Detector</h1><p class="sub">Connect your detector to Wi-Fi</p></div>
     </div>
+    <div class="banner" id="banner" role="status"></div>
 
     <div class="lbl"><span>Network</span><button class="ghost" id="rescan" type="button">Rescan</button></div>
     <div class="nets" id="nets"><div class="empty">Scanning&hellip;</div></div>
@@ -91,6 +96,13 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
 
     <div class="lbl"><span>Password</span><button class="ghost" id="showpw" type="button">Show</button></div>
     <input type="password" id="pass" placeholder="Wi-Fi password" autocomplete="off">
+    <div class="hint" id="passHint" style="display:none"></div>
+
+    <div class="lbl"><span>Device password</span></div>
+    <input type="text" id="devUser" autocomplete="username" value="lightning" hidden>
+    <input type="password" id="dev" placeholder="8 or more characters" autocomplete="new-password">
+    <div class="hint" id="devHint">Protects the detector: you'll need it to change settings or
+      update the firmware. Anyone on your network can still view the dashboard.</div>
 
     <button class="go" id="save" type="button" disabled>Connect</button>
     <div class="status" id="st" role="status"></div>
@@ -102,7 +114,19 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
 <script>
   let chosen = null;
   const $ = id => document.getElementById(id);
-  const nets = $('nets'), save = $('save'), st = $('st'), pass = $('pass'), manual = $('manual');
+  const nets = $('nets'), save = $('save'), st = $('st'), pass = $('pass'), manual = $('manual'), dev = $('dev');
+  // From /info: is a device password set already, which network is saved.
+  let INFO = { hasPass: 0, ssid: '', failed: 0, forced: 0 };
+  function validate(){
+    const n = dev.value.length;
+    const devOk = INFO.hasPass ? (n === 0 || n >= 8) : n >= 8;
+    save.disabled = !chosen || !devOk || n > 64;
+    // Same network as saved: its password can stay as it is.
+    const keep = !!(chosen && INFO.ssid && chosen === INFO.ssid);
+    pass.placeholder = keep ? 'Leave blank to keep the saved password' : 'Wi-Fi password';
+    $('passHint').style.display = keep ? 'block' : 'none';
+    $('passHint').textContent = keep ? 'This network is already saved. Type a password only if it changed.' : '';
+  }
   const LOCK = '<svg width="12" height="12" viewBox="0 0 24 24" aria-label="secured"><path fill="currentColor" d="M6 10V8a6 6 0 1 1 12 0v2h1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h1zm2 0h8V8a4 4 0 1 0-8 0v2z"/></svg>';
 
   function level(r){ return r >= -55 ? 4 : r >= -65 ? 3 : r >= -75 ? 2 : 1; }
@@ -127,7 +151,7 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
       b.onclick = () => {
         chosen = n.ssid; manual.value = '';
         [...nets.children].forEach(c => c.classList.remove('sel'));
-        b.classList.add('sel'); save.disabled = false;
+        b.classList.add('sel'); validate();
         if (n.lock) pass.focus();
       };
       nets.appendChild(b);
@@ -145,8 +169,9 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
   manual.oninput = () => {
     chosen = manual.value.trim() || null;
     [...nets.children].forEach(c => c.classList && c.classList.remove('sel'));
-    save.disabled = !chosen;
+    validate();
   };
+  dev.oninput = validate;
   $('showpw').onclick = function(){
     const show = pass.type === 'password';
     pass.type = show ? 'text' : 'password';
@@ -155,12 +180,14 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
   save.onclick = () => {
     if (!chosen) return;
     save.disabled = true; st.className = 'status'; st.textContent = 'Saving…';
-    const body = 'ssid=' + encodeURIComponent(chosen) + '&pass=' + encodeURIComponent(pass.value);
-    fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+    const body = 'ssid=' + encodeURIComponent(chosen) + '&pass=' + encodeURIComponent(pass.value) +
+                 '&devpass=' + encodeURIComponent(dev.value);
+    fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-LD': '1' }, body })
       .then(r => r.json()).then(j => {
         if (j.ok){
           st.className = 'status ok';
-          st.textContent = 'Saved. The detector is restarting and joining “' + chosen + '”. You can close this page.';
+          st.textContent = 'Saved. The detector is restarting and joining “' + chosen + '”. ' +
+            'If it can’t join, this setup network comes back within a minute so you can try again.';
         } else {
           st.className = 'status err'; st.textContent = 'Could not save: ' + (j.err || 'unknown error');
           save.disabled = false;
@@ -171,6 +198,24 @@ static const char SETUP_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><
       });
   };
   pass.addEventListener('keydown', e => { if (e.key === 'Enter' && !save.disabled) save.click(); });
+  dev.addEventListener('keydown', e => { if (e.key === 'Enter' && !save.disabled) save.click(); });
+  function showInfo(){
+    const bn = $('banner');
+    if (INFO.hasPass){
+      dev.placeholder = 'Leave blank to keep the current one';
+      $('devHint').textContent = 'A device password is already set. Type a new one only to replace it (for example, if you forgot it).';
+    }
+    if (INFO.failed && INFO.ssid){
+      bn.className = 'banner err';
+      bn.textContent = 'The detector could not join “' + INFO.ssid + '”. Check the network and its password, then connect again.';
+    } else if (INFO.forced){
+      bn.className = 'banner info';
+      bn.textContent = 'Setup mode (reset pressed twice). Change the network or the device password below. ' +
+        (INFO.ssid ? 'Left alone, the detector goes back to “' + INFO.ssid + '” in about 5 minutes.' : '');
+    }
+    validate();
+  }
+  fetch('/info').then(r => r.json()).then(j => { INFO = j; showInfo(); }).catch(() => {});
   scan();
 </script>
 </body></html>
@@ -287,9 +332,25 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
   .btn.danger{color:#ff9a9d;border-color:rgba(255,93,98,.35)}
   .btn.danger:hover{background:rgba(255,93,98,.12);border-color:var(--bad);color:#ffb9bb}
   .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  input[type=text],select{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;color:var(--ink);
+  input[type=text],input[type=password],select{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;color:var(--ink);
     font-size:13.5px;padding:8px 11px;outline:none;min-width:0}
-  input[type=text]:focus,select:focus{border-color:var(--bolt)}
+  input[type=text]:focus,input[type=password]:focus,select:focus{border-color:var(--bolt)}
+
+  /* ---- lock + password dialog ---- */
+  button.pill{cursor:pointer;font-family:inherit}
+  button.pill:hover{border-color:var(--bolt-dim);color:var(--ink)}
+  .pill.lock::before{display:none}
+  .pill.lock svg{width:12px;height:12px}
+  .pill.lock.open{color:var(--good);border-color:rgba(79,209,139,.35)}
+  .pill.lock.none{color:var(--warn);border-color:rgba(255,161,61,.4)}
+  dialog.dlg{background:var(--panel);color:var(--ink);border:1px solid var(--line2);border-radius:14px;padding:20px;
+    width:min(390px,calc(100vw - 32px));box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:visible}
+  dialog.dlg::backdrop{background:rgba(5,8,15,.72)}
+  .dlg h3{font-family:var(--display);font-weight:700;font-size:18px;margin:0 0 6px}
+  .dlg p{margin:0 0 14px;font-size:13.5px;color:var(--dim)}
+  .dlg input[type=password]{display:block;width:100%;margin:0 0 10px;font-size:15px;padding:10px 12px}
+  .dlg .err{color:#ff9a9d;font-size:13px;min-height:19px;margin:-2px 0 8px}
+  .dlg .actions{justify-content:flex-end}
   .saved{font-size:12.5px;color:var(--good);font-weight:600;opacity:0;transition:opacity .3s}
   .saved.show{opacity:1}
 
@@ -397,6 +458,7 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
     <div class="hdr-r">
       <span class="pill" id="sensorPill" data-help="Sensor|The AS3935 chip and how it is connected. Green means it answered and its oscillators calibrated.">Sensor &hellip;</span>
       <span class="pill" id="linkPill">Connecting&hellip;</span>
+      <button class="pill lock" id="lockPill" type="button" data-help="Device password|Viewing is open to anyone on your network; changing settings, tuning, clearing the log and updating the firmware need the device password. Click to unlock this browser, or to lock it again.">Locked</button>
       <span class="clock" id="clock" data-help="Device clock|The detector's clock, shown in your time zone. Strikes are only timestamped once this is set (from the internet, or from this browser).">--:--:--</span>
       <button class="btn" id="helpBtn" type="button" title="Explain the controls">? Help</button>
     </div>
@@ -538,6 +600,7 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
       <div class="ph"><h2>Device</h2></div>
       <dl class="kv">
         <dt>Firmware</dt><dd id="dFw">&mdash;</dd>
+        <dt>Access</dt><dd id="dAuth">&mdash;</dd>
         <dt>Address</dt><dd id="dIp">&mdash;</dd>
         <dt>Wi-Fi signal</dt><dd id="dRssi">&mdash;</dd>
         <dt>Transmit</dt><dd id="dTx">&mdash;</dd>
@@ -568,11 +631,31 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
       </div>
       <div class="divider"></div>
       <div class="actions">
-        <a class="btn" href="/update" target="_blank" data-help="Firmware update|Upload a compiled .bin from the browser (Arduino IDE: Sketch > Export Compiled Binary). Hard-refresh this page afterwards.">Update firmware</a>
-        <button class="btn danger" id="wifiReset" type="button">Reset Wi-Fi</button>
+        <button class="btn" id="fwBtn" type="button" data-help="Firmware update|Install a compiled .bin (Arduino IDE: Sketch > Export Compiled Binary). Needs the device password. The detector restarts and this page reloads by itself.">Update firmware</button>
+        <input type="file" id="fwFile" accept=".bin,application/octet-stream" hidden>
+        <button class="btn" id="pwBtn" type="button" data-help="Device password|Change it here (you need the current one). Every other browser is signed out. Forgot it? Press the detector's reset button twice within 5 seconds and set a new one on the setup page.">Change password</button>
+        <button class="btn danger" id="wifiReset" type="button" data-help="Reset Wi-Fi|Forgets the Wi-Fi network and restarts into setup mode. The device password is kept.">Reset Wi-Fi</button>
       </div>
+      <div class="prog" id="fwProg"><i></i></div>
+      <div class="tres" id="fwNote"></div>
     </section>
   </div>
+
+  <dialog class="dlg" id="pwDlg">
+    <form id="pwForm" method="dialog" autocomplete="on">
+      <h3 id="pwTitle">Unlock</h3>
+      <p id="pwText"></p>
+      <input type="text" id="pwUser" autocomplete="username" value="lightning" hidden>
+      <input type="password" id="pwCur" placeholder="Device password" autocomplete="current-password">
+      <input type="password" id="pwNew" placeholder="New password (8+ characters)" autocomplete="new-password">
+      <input type="password" id="pwNew2" placeholder="Repeat the new password" autocomplete="new-password">
+      <div class="err" id="pwErr" role="alert"></div>
+      <div class="actions">
+        <button class="btn" id="pwCancel" type="button">Cancel</button>
+        <button class="btn primary" id="pwOk" type="submit">Unlock</button>
+      </div>
+    </form>
+  </dialog>
 
   <div class="foot">A hobby sensor, not a safety device. If you hear thunder, you are close enough to be struck.</div>
 </div>
@@ -584,17 +667,52 @@ static const char DASH_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><h
 //  Helpers
 // ===================================================================
 const $ = id => document.getElementById(id);
-const api = (p, o) => fetch(p, Object.assign({ cache: 'no-store' }, o)).then(r => {
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
-});
-const post = (p, data) => api(p, { method: 'POST',
-  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  body: new URLSearchParams(data || {}).toString() });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const nowS = () => Date.now() / 1000;
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+// Sign-in token from /api/login, kept in this browser. X-LD marks requests
+// as coming from this page: other sites cannot add it without the browser
+// asking the detector first, which it never allows.
+let TOKEN = lsGet('ld.token') || '';
+function setToken(t) {
+  TOKEN = t || '';
+  try { if (TOKEN) localStorage.setItem('ld.token', TOKEN); else localStorage.removeItem('ld.token'); } catch (e) {}
+  if (S) S.auth = TOKEN ? 1 : 0;
+  renderLock();
+}
+function hdrs(extra) {
+  const h = Object.assign({ 'X-LD': '1' }, extra || {});
+  if (TOKEN) h['X-Auth'] = TOKEN;
+  return h;
+}
+async function api(p, o) {
+  o = o || {};
+  const r = await fetch(p, Object.assign({ cache: 'no-store' }, o, { headers: hdrs(o.headers) }));
+  if (!r.ok) {
+    let j = null;
+    try { j = await r.json(); } catch (e) {}
+    const err = new Error((j && j.err) || 'HTTP ' + r.status);
+    err.status = r.status;
+    throw err;
+  }
+  return r.json();
+}
+const form = data => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams(data || {}).toString() });
+// A change: if the detector says it is locked (or has no password yet),
+// ask for the password once and try again.
+async function post(p, data) {
+  try { return await api(p, form(data)); }
+  catch (e) {
+    if (e.status !== 401 && e.status !== 428) throw e;
+    if (e.status === 401) setToken('');
+    if (!await pwDialog(e.status === 428 ? 'create' : 'unlock')) { const c = new Error('cancelled'); c.cancelled = true; throw c; }
+    return api(p, form(data));
+  }
+}
+function oops(what, e) { if (!e || !e.cancelled) alert(what + ': ' + (e ? e.message : 'failed')); }
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 const OVERHEAD = 1, OUT = 63;
@@ -774,6 +892,7 @@ function renderStatus() {
   $('calibNote').textContent = !S.sensor ? '' : S.calib ? 'oscillators calibrated ✓' : 'oscillator calibration failed';
   $('calibNote').style.color = S.sensor && !S.calib ? css('--warn') : '';
   $('tuneBtn').disabled = !S.sensor || S.tuning;
+  renderLock();
 }
 
 // ===================================================================
@@ -1205,7 +1324,7 @@ $('placeSave').onclick = async () => {
     fittedOnce = false;
     stopPlacing();
   } catch (e) {
-    alert('Could not save the location: ' + e.message);
+    oops('Could not save the location', e);
     $('placeSave').disabled = false;
   }
 };
@@ -1271,7 +1390,7 @@ $('sApply').onclick = async () => {
     if (!r.ok) throw new Error(r.err || 'failed');
     Object.keys(body).forEach(k => CFG[k] = +body[k]);
     const s = $('sSaved'); s.classList.add('show'); setTimeout(() => s.classList.remove('show'), 1800);
-  } catch (e) { alert('Could not save: ' + e.message); }
+  } catch (e) { oops('Could not save', e); }
 };
 
 // ===================================================================
@@ -1283,7 +1402,7 @@ for (let c = 0; c < 16; c++) {
 }
 $('tuneBtn').onclick = async () => {
   try { await post('/api/tune'); pollTune(); }
-  catch (e) { alert('Could not start tuning: ' + e.message); }
+  catch (e) { oops('Could not start tuning', e); }
 };
 $('capSet').onclick = async () => {
   const v = $('capSel').value;
@@ -1291,7 +1410,7 @@ $('capSet').onclick = async () => {
     const r = await post('/api/config', { tuneCap: v });
     if (!r.ok) throw new Error(r.err);
     CFG.tuneCap = +v;
-  } catch (e) { alert('Could not set the capacitor: ' + e.message); }
+  } catch (e) { oops('Could not set the capacitor', e); }
 };
 
 async function pollTune() {
@@ -1369,16 +1488,17 @@ $('simBtn').onclick = async () => {
     $('simNote').textContent = 'Test strike at ' + fmtDist(r.d) + (S && !S.timeValid ? ' (waiting for the clock)' : '');
     schedulePoll(300);
     setTimeout(() => $('simNote').textContent = '', 4000);
-  } catch (e) { alert('Simulate failed: ' + e.message); }
+  } catch (e) { oops('Simulate failed', e); }
 };
 $('clearBtn').onclick = async () => {
   if (!confirm('Delete every logged strike from the detector? This cannot be undone.')) return;
   try { await post('/api/clearlog'); await loadLog(); dirty = true; renderData(); }
-  catch (e) { alert('Could not clear the log: ' + e.message); }
+  catch (e) { oops('Could not clear the log', e); }
 };
 $('wifiReset').onclick = async () => {
-  if (!confirm('Forget the Wi-Fi network? The detector restarts into setup mode and raises the "LightningDetector-Setup" network.')) return;
-  try { await post('/api/reset'); } catch (e) {}
+  if (!confirm('Forget the Wi-Fi network? The detector restarts into setup mode and raises the "LightningDetector-Setup" network. The device password is kept.')) return;
+  try { await post('/api/reset'); }
+  catch (e) { if (e.cancelled || e.status) { oops('Could not reset Wi-Fi', e); return; } }   // no status: it already restarted
   alert('Wi-Fi cleared. Join the LightningDetector-Setup network to set it up again.');
 };
 $('csvBtn').onclick = downloadCsv;
@@ -1390,8 +1510,135 @@ $('wApply').onclick = async () => {
     CFG.wifiPower = +body.wifiPower; CFG.wifiSleep = +body.wifiSleep;
     const s = $('wSaved'); s.classList.add('show'); setTimeout(() => s.classList.remove('show'), 1800);
     schedulePoll(1500);
-  } catch (e) { alert('Could not save: ' + e.message); }
+  } catch (e) { oops('Could not save', e); }
 };
+
+// ---- device password ----
+const LOCK_SVG = {
+  shut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 10V8a6 6 0 1 1 12 0v2h1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1h1zm2 0h8V8a4 4 0 1 0-8 0v2z"/></svg>',
+  open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 10V8a4 4 0 0 1 7.9-.9l1.9-.6A6 6 0 0 0 6 8v2H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V11a1 1 0 0 0-1-1H8z"/></svg>'
+};
+function renderLock() {
+  const p = $('lockPill');
+  if (!S) return;
+  const none = !S.hasPass, open = !none && !!S.auth;
+  p.className = 'pill lock' + (none ? ' none' : open ? ' open' : '');
+  p.innerHTML = (open ? LOCK_SVG.open : LOCK_SVG.shut);
+  p.appendChild(document.createTextNode(none ? 'No password' : open ? 'Unlocked' : 'Locked'));
+  $('dAuth').textContent = none ? 'no device password set: anyone on your network can change settings'
+    : open ? 'unlocked in this browser' : 'locked (viewing only)';
+  $('pwBtn').textContent = none ? 'Set password' : 'Change password';
+}
+async function ensureUnlocked() {
+  if (S && S.hasPass && S.auth) return true;
+  return pwDialog(S && !S.hasPass ? 'create' : 'unlock');
+}
+$('lockPill').onclick = async () => {
+  if (!S) return;
+  if (!S.hasPass) { await pwDialog('create'); return; }
+  if (S.auth) { setToken(''); return; }               // lock this browser again
+  await pwDialog('unlock');
+};
+$('pwBtn').onclick = () => pwDialog(S && S.hasPass ? 'change' : 'create');
+
+// One dialog for all three: unlock (current), create (new x2), change (all).
+let pwBusy = false;
+function pwDialog(mode) {
+  if (pwBusy) return Promise.resolve(false);
+  pwBusy = true;
+  const d = $('pwDlg'), cur = $('pwCur'), n1 = $('pwNew'), n2 = $('pwNew2'), err = $('pwErr'), ok = $('pwOk');
+  const M = {
+    unlock: ['Unlock this detector', 'Enter the device password to change settings. This browser stays unlocked until you lock it or the password changes.', 'Unlock'],
+    create: ['Set a device password', 'Right now anyone on your network can change settings or replace the firmware. Choose a password (8 or more characters) to protect them. Viewing stays open.', 'Set password'],
+    change: ['Change the device password', 'Every other browser will need the new password.', 'Change password']
+  }[mode];
+  $('pwTitle').textContent = M[0]; $('pwText').textContent = M[1]; ok.textContent = M[2];
+  cur.style.display = mode === 'create' ? 'none' : 'block';
+  cur.placeholder = mode === 'change' ? 'Current password' : 'Device password';
+  n1.style.display = n2.style.display = mode === 'unlock' ? 'none' : 'block';
+  [cur, n1, n2].forEach(i => i.value = '');
+  err.textContent = '';
+  return new Promise(resolve => {
+    const done = v => { d.close(); pwBusy = false; $('pwForm').onsubmit = null; $('pwCancel').onclick = null; d.oncancel = null; resolve(v); };
+    $('pwCancel').onclick = () => done(false);
+    d.oncancel = e => { e.preventDefault(); done(false); };
+    $('pwForm').onsubmit = async e => {
+      e.preventDefault();
+      err.textContent = '';
+      if (mode !== 'unlock') {
+        if (n1.value.length < 8) { err.textContent = 'Use 8 or more characters.'; n1.focus(); return; }
+        if (n1.value.length > 64) { err.textContent = 'Use 64 characters or fewer.'; n1.focus(); return; }
+        if (n1.value !== n2.value) { err.textContent = 'The two new passwords differ.'; n2.focus(); return; }
+      }
+      ok.disabled = true;
+      try {
+        const j = mode === 'unlock' ? await api('/api/login', form({ pass: cur.value }))
+                                    : await api('/api/password', form({ old: cur.value, new: n1.value }));
+        setToken(j.token);
+        if (S) { S.hasPass = 1; S.auth = 1; }
+        renderLock();
+        ok.disabled = false;
+        done(true);
+      } catch (x) {
+        ok.disabled = false;
+        err.textContent = x.message.charAt(0).toUpperCase() + x.message.slice(1) + '.';
+        (mode === 'create' ? n1 : cur).focus();
+      }
+    };
+    d.showModal();
+    (mode === 'create' ? n1 : cur).focus();
+  });
+}
+
+// ---- firmware update ----
+$('fwBtn').onclick = async () => { if (await ensureUnlocked()) $('fwFile').click(); };
+$('fwFile').onchange = () => {
+  const f = $('fwFile').files[0];
+  $('fwFile').value = '';
+  if (!f) return;
+  if (!/\.bin$/i.test(f.name) && !confirm('“' + f.name + '” is not a .bin file. Install it anyway?')) return;
+  uploadFirmware(f);
+};
+function uploadFirmware(f) {
+  const prog = $('fwProg'), bar = prog.firstElementChild, note = $('fwNote');
+  const say = (t, cls) => { note.innerHTML = ''; const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = t; note.appendChild(s); };
+  $('fwBtn').disabled = true;
+  prog.style.display = 'block'; bar.style.width = '0%';
+  say('Uploading ' + f.name + '…');
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/update');
+  const h = hdrs();
+  Object.keys(h).forEach(k => x.setRequestHeader(k, h[k]));
+  x.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100).toFixed(1) + '%'; };
+  x.onload = async () => {
+    let j = null;
+    try { j = JSON.parse(x.responseText); } catch (e) {}
+    if (x.status === 200 && j && j.ok) {
+      bar.style.width = '100%';
+      say('Installed. The detector is restarting…', 'okc');
+      clearTimeout(pollTimer);
+      await sleep(5000);
+      for (let i = 0; i < 45; i++) {
+        try { await api('/api/state'); location.reload(); return; } catch (e) {}
+        await sleep(2000);
+      }
+      say('The detector has not come back yet. Reload this page in a minute.', 'badc');
+    } else {
+      if (x.status === 401) setToken('');
+      prog.style.display = 'none';
+      say('Update failed: ' + ((j && j.err) || 'HTTP ' + x.status) + '. The detector is still running the old firmware.', 'badc');
+      $('fwBtn').disabled = false;
+    }
+  };
+  x.onerror = () => {
+    prog.style.display = 'none';
+    say('The upload was interrupted. The detector is still running the old firmware.', 'badc');
+    $('fwBtn').disabled = false;
+  };
+  const fd = new FormData();
+  fd.append('firmware', f, f.name);
+  x.send(fd);
+}
 $('moreBtn').onclick = () => { logLimit += 300; renderLog(inWindow()); };
 
 // ---- window + test toggle ----
@@ -1461,6 +1708,11 @@ window.addEventListener('resize', () => { drawChart(inWindow()); });
   renderData();
   setInterval(() => { if (S) renderStatus(); }, 1000);
   schedulePoll(POLL_MS);
+  // A token this browser kept from before may have been replaced (password
+  // changed elsewhere): forget it so the lock shows the truth.
+  if (TOKEN && S && S.hasPass && !S.auth) setToken('');
+  // Upgraded from a version without a password: ask for one right away.
+  if (S && !S.hasPass) setTimeout(() => pwDialog('create'), 600);
 })();
 </script>
 </body></html>

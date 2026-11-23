@@ -1,4 +1,11 @@
-# Lightning Detector — Handoff (v1.1.0)
+# Lightning Detector — Handoff (v1.2.0)
+
+> **v1.2.0 security changes** (device password, token auth via `X-Auth`,
+> `X-LD` header on all POSTs, host-name check, setup only on purpose via
+> reset-twice, own `/api/update` upload, IDE OTA opt-in) are summarised in
+> the root README's *Security* section; code in `auth.cpp` and `guard()` in
+> `LightningDetector.ino`. Sections below predate them where they mention
+> `/update` or the fallback AP.
 
 **Purpose of this doc:** everything a new person (or a new AI session) needs to
 pick this project up cold. The root `README.md` is the short build guide.

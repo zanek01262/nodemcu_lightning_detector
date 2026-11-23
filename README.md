@@ -180,6 +180,7 @@ The D1 mini's blue LED (D4):
 |---|---|
 | Short blink once a second | Setup mode: join **LightningDetector-Setup** |
 | Off | Running normally |
+| Two short blinks every 2 seconds | Can't reach your Wi-Fi; it keeps retrying |
 | Quarter-second flash | Strike detected (simulated strikes too) |
 
 ### Antenna tuning
@@ -231,9 +232,10 @@ surface-mount parts.
 4. Open `LightningDetector/LightningDetector.ino` and upload. No extra
    libraries are needed.
 
-Later updates can go over Wi-Fi: Sketch → Export Compiled Binary, then
-upload the `.bin` at `http://lightning.local/update`. After an update,
-hard-refresh the dashboard (Ctrl+Shift+R).
+Later updates go over Wi-Fi: Sketch → Export Compiled Binary, then on the
+dashboard's Device panel click **Update firmware** and pick the `.bin`. It
+asks for the device password; the page reloads itself when the detector is
+back.
 
 ## Set up
 
@@ -241,13 +243,35 @@ hard-refresh the dashboard (Ctrl+Shift+R).
 2. On your phone, join the Wi-Fi network **LightningDetector-Setup**. The setup
    page opens (or browse to `http://192.168.4.1`). On iPhone, turn off
    Cellular Data if it doesn't load.
-3. Pick your network, enter the password, tap **Connect**.
+3. Pick your network, enter its password, choose a **device password**
+   (8+ characters), and tap **Connect**. If the detector can't join, the
+   setup network comes back within a minute with an error.
 4. Back on your home Wi-Fi, open **http://lightning.local** (or the IP your
    router shows for "lightning").
 5. Click **Place sensor**, then click the map where the detector is, or search
    your address. Drag the pin to the exact spot and click **Save location**.
 
 On first boot the detector tunes its antenna by itself (about 9 seconds).
+
+## Security
+
+- **Viewing is open** to anyone on your network. **Changing anything**
+  (settings, location, tuning, clearing the log, Reset Wi-Fi, firmware
+  updates) needs the device password. Click the lock in the header to
+  unlock a browser or lock it again.
+- The device only answers to its own address (`lightning.local`, its IP,
+  or `lightning.<your router's local domain>`), so other websites can't
+  read it through your browser. Set `HOST_CHECK 0` in `config.h` if you
+  reach it under another name.
+- The setup network only comes up on first boot, after **Reset Wi-Fi**,
+  or when you **press the reset button twice within 5 seconds**. A power
+  cut never brings it up. It is open by default: set `AP_PASS` in
+  `config.h` before flashing to encrypt it.
+- **Forgot the device password, or changed your router?** Press reset
+  twice, join **LightningDetector-Setup**, and set a new one.
+- Arduino IDE network upload is off unless you set `OTA_PASSWORD` in
+  `config.h`.
+- Don't forward router ports to the detector: it uses plain HTTP.
 
 ## Notes
 

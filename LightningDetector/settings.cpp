@@ -14,8 +14,10 @@
      "lon":-122.332100
    }
 
-   The file is written to a temp name and renamed over the old one, so a
-   power cut mid-save leaves the previous settings intact.
+   The reader walks the object member by member, so a value can never be
+   mistaken for a key (a network name may contain any characters). The file
+   is written to a temp name and renamed over the old one, so a power cut
+   mid-save leaves the previous settings intact.
    ===================================================================== */
 #include "settings.h"
 #include "config.h"
@@ -28,6 +30,10 @@ Settings settings;
 static void applyDefaults() {
   settings.wifiSsid   = "";
   settings.wifiPass   = "";
+  settings.wifiFresh  = 0;
+  settings.passSalt   = "";
+  settings.passHash   = "";
+  settings.authToken  = "";
   settings.outdoor    = DEF_OUTDOOR;
   settings.noiseFloor = DEF_NOISE_FLOOR;
   settings.watchdog   = DEF_WATCHDOG;
@@ -44,6 +50,7 @@ static void applyDefaults() {
 }
 
 void clampSettings() {
+  settings.wifiFresh  = settings.wifiFresh ? 1 : 0;
   settings.outdoor    = settings.outdoor ? 1 : 0;
   if (settings.noiseFloor > 7)  settings.noiseFloor = 7;
   if (settings.watchdog   > 10) settings.watchdog   = 10;
@@ -61,46 +68,115 @@ void clampSettings() {
     settings.hasLoc = 0; settings.lat = 0; settings.lon = 0;
   }
   settings.hasLoc = settings.hasLoc ? 1 : 0;
-}
-
-// ---- tiny extractors -------------------------------------------------
-// Find "key": and return the raw value text up to , or } (no nesting).
-static bool findValue(const String& src, const char* key, String& out) {
-  String pat = String('"') + key + "\"";
-  int k = src.indexOf(pat);
-  if (k < 0) return false;
-  int colon = src.indexOf(':', k + pat.length());
-  if (colon < 0) return false;
-  int i = colon + 1;
-  while (i < (int)src.length() && (src[i] == ' ' || src[i] == '\t')) i++;
-  if (i >= (int)src.length()) return false;
-
-  if (src[i] == '"') {                 // string value
-    int end = i + 1;
-    String v;
-    while (end < (int)src.length() && src[end] != '"') {
-      if (src[end] == '\\' && end + 1 < (int)src.length()) end++; // skip esc
-      v += src[end++];
-    }
-    out = v;
-  } else {                              // number / literal
-    int end = i;
-    while (end < (int)src.length() &&
-           src[end] != ',' && src[end] != '}' && src[end] != '\n') end++;
-    out = src.substring(i, end);
-    out.trim();
+  // A half-written password record is no password at all.
+  if (settings.passHash.length() != 64 || settings.passSalt.length() != 32) {
+    settings.passHash = ""; settings.passSalt = ""; settings.authToken = "";
   }
-  return true;
 }
 
-static String jsonEscape(const String& s) {
-  String o;
+bool settingsEqual(const Settings& a, const Settings& b) {
+  return a.wifiSsid == b.wifiSsid && a.wifiPass == b.wifiPass && a.wifiFresh == b.wifiFresh &&
+         a.passSalt == b.passSalt && a.passHash == b.passHash && a.authToken == b.authToken &&
+         a.outdoor == b.outdoor && a.noiseFloor == b.noiseFloor && a.watchdog == b.watchdog &&
+         a.spikeRej == b.spikeRej && a.minStrikes == b.minStrikes && a.maskDist == b.maskDist &&
+         a.autoNoise == b.autoNoise && a.tuneCap == b.tuneCap &&
+         a.wifiPower == b.wifiPower && a.wifiSleep == b.wifiSleep &&
+         a.hasLoc == b.hasLoc && a.lat == b.lat && a.lon == b.lon;
+}
+
+// ---- tiny JSON reader -------------------------------------------------
+static int skipSpace(const String& s, int i) {
+  while (i < (int)s.length() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
+  return i;
+}
+
+// s[i] is the opening quote. Decodes into out; returns the index after the
+// closing quote, or -1 if the string never ends.
+static int readString(const String& s, int i, String& out) {
+  out = "";
+  for (i++; i < (int)s.length(); i++) {
+    char c = s[i];
+    if (c == '"') return i + 1;
+    if (c == '\\' && i + 1 < (int)s.length()) {
+      char e = s[++i];
+      if      (e == 'n') out += '\n';
+      else if (e == 'r') out += '\r';
+      else if (e == 't') out += '\t';
+      else if (e == 'u' && i + 4 < (int)s.length()) {
+        out += (char)strtol(s.substring(i + 1, i + 5).c_str(), nullptr, 16);
+        i += 4;
+      }
+      else out += e;                       // \" and \\ (and anything else)
+    } else {
+      out += c;
+    }
+  }
+  return -1;
+}
+
+static void applyMember(const String& k, const String& v) {
+  if      (k == "ssid")       settings.wifiSsid   = v;
+  else if (k == "pass")       settings.wifiPass   = v;
+  else if (k == "wifiFresh")  settings.wifiFresh  = (uint8_t)v.toInt();
+  else if (k == "passSalt")   settings.passSalt   = v;
+  else if (k == "passHash")   settings.passHash   = v;
+  else if (k == "authToken")  settings.authToken  = v;
+  else if (k == "outdoor")    settings.outdoor    = (uint8_t)v.toInt();
+  else if (k == "noiseFloor") settings.noiseFloor = (uint8_t)v.toInt();
+  else if (k == "watchdog")   settings.watchdog   = (uint8_t)v.toInt();
+  else if (k == "spikeRej")   settings.spikeRej   = (uint8_t)v.toInt();
+  else if (k == "minStrikes") settings.minStrikes = (uint8_t)v.toInt();
+  else if (k == "maskDist")   settings.maskDist   = (uint8_t)v.toInt();
+  else if (k == "autoNoise")  settings.autoNoise  = (uint8_t)v.toInt();
+  else if (k == "tuneCap")    settings.tuneCap    = (int8_t)v.toInt();
+  else if (k == "wifiPower")  settings.wifiPower  = (int8_t)v.toInt();
+  else if (k == "wifiSleep")  settings.wifiSleep  = (uint8_t)v.toInt();
+  else if (k == "hasLoc")     settings.hasLoc     = (uint8_t)v.toInt();
+  else if (k == "lat")        settings.lat        = v.toFloat();
+  else if (k == "lon")        settings.lon        = v.toFloat();
+}
+
+// Walks {"key":value, ...}. Stops quietly at anything malformed; whatever
+// was read up to that point is kept.
+static void parseObject(const String& s) {
+  int i = skipSpace(s, 0);
+  if (i >= (int)s.length() || s[i] != '{') return;
+  i++;
+  String key, val;
+  for (;;) {
+    i = skipSpace(s, i);
+    if (i < (int)s.length() && s[i] == ',') { i++; continue; }
+    if (i >= (int)s.length() || s[i] != '"') return;     // '}' or garbage
+    i = readString(s, i, key);
+    if (i < 0) return;
+    i = skipSpace(s, i);
+    if (i >= (int)s.length() || s[i] != ':') return;
+    i = skipSpace(s, i + 1);
+    if (i >= (int)s.length()) return;
+    if (s[i] == '"') {
+      i = readString(s, i, val);
+      if (i < 0) return;
+    } else {
+      int end = i;
+      while (end < (int)s.length() && s[end] != ',' && s[end] != '}' && s[end] != '\n') end++;
+      val = s.substring(i, end);
+      val.trim();
+      i = end;
+    }
+    applyMember(key, val);
+  }
+}
+
+// Escapes for a JSON string: quote, backslash and control characters.
+static void printJsonString(File& f, const String& s) {
+  f.print('"');
   for (size_t i = 0; i < s.length(); i++) {
     char c = s[i];
-    if (c == '"' || c == '\\') o += '\\';
-    o += c;
+    if (c == '"' || c == '\\') { f.print('\\'); f.print(c); }
+    else if ((uint8_t)c < 0x20) f.printf("\\u%04x", (unsigned)(uint8_t)c);
+    else f.print(c);
   }
-  return o;
+  f.print('"');
 }
 
 void loadSettings() {
@@ -115,26 +191,11 @@ void loadSettings() {
   if (!f) return;
 
   String src;
-  src.reserve(384);
+  src.reserve(f.size() + 1);
   while (f.available()) src += (char)f.read();
   f.close();
 
-  String v;
-  if (findValue(src, "ssid", v))       settings.wifiSsid   = v;
-  if (findValue(src, "pass", v))       settings.wifiPass   = v;
-  if (findValue(src, "outdoor", v))    settings.outdoor    = (uint8_t)v.toInt();
-  if (findValue(src, "noiseFloor", v)) settings.noiseFloor = (uint8_t)v.toInt();
-  if (findValue(src, "watchdog", v))   settings.watchdog   = (uint8_t)v.toInt();
-  if (findValue(src, "spikeRej", v))   settings.spikeRej   = (uint8_t)v.toInt();
-  if (findValue(src, "minStrikes", v)) settings.minStrikes = (uint8_t)v.toInt();
-  if (findValue(src, "maskDist", v))   settings.maskDist   = (uint8_t)v.toInt();
-  if (findValue(src, "autoNoise", v))  settings.autoNoise  = (uint8_t)v.toInt();
-  if (findValue(src, "tuneCap", v))    settings.tuneCap    = (int8_t)v.toInt();
-  if (findValue(src, "wifiPower", v))  settings.wifiPower  = (int8_t)v.toInt();
-  if (findValue(src, "wifiSleep", v))  settings.wifiSleep  = (uint8_t)v.toInt();
-  if (findValue(src, "hasLoc", v))     settings.hasLoc     = (uint8_t)v.toInt();
-  if (findValue(src, "lat", v))        settings.lat        = v.toFloat();
-  if (findValue(src, "lon", v))        settings.lon        = v.toFloat();
+  parseObject(src);
   clampSettings();
 }
 
@@ -145,8 +206,12 @@ bool saveSettings() {
   if (!f) return false;
 
   f.print(F("{\n"));
-  f.print(F("  \"ssid\":\""));      f.print(jsonEscape(settings.wifiSsid)); f.print(F("\",\n"));
-  f.print(F("  \"pass\":\""));      f.print(jsonEscape(settings.wifiPass)); f.print(F("\",\n"));
+  f.print(F("  \"ssid\":"));        printJsonString(f, settings.wifiSsid);  f.print(F(",\n"));
+  f.print(F("  \"pass\":"));        printJsonString(f, settings.wifiPass);  f.print(F(",\n"));
+  f.print(F("  \"wifiFresh\":"));   f.print(settings.wifiFresh);            f.print(F(",\n"));
+  f.print(F("  \"passSalt\":"));    printJsonString(f, settings.passSalt);  f.print(F(",\n"));
+  f.print(F("  \"passHash\":"));    printJsonString(f, settings.passHash);  f.print(F(",\n"));
+  f.print(F("  \"authToken\":"));   printJsonString(f, settings.authToken); f.print(F(",\n"));
   f.print(F("  \"outdoor\":"));     f.print(settings.outdoor);              f.print(F(",\n"));
   f.print(F("  \"noiseFloor\":"));  f.print(settings.noiseFloor);           f.print(F(",\n"));
   f.print(F("  \"watchdog\":"));    f.print(settings.watchdog);             f.print(F(",\n"));
